@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000001 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Tue, 18 Aug 2026 15:00:00 +0900
+Subject: [PATCH] env: skip redundant J7200 MMC rescan
+
+The preceding mmc dev command already performs forced card and controller
+initialization. Continue directly with the existing bootscript, bootenv,
+and uenvcmd handling after it succeeds instead of forcing initialization a
+second time with mmc rescan.
+
+Upstream-Status: Inappropriate [J7200 boot-time optimization]
+---
+ include/env/ti/mmc.env | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/include/env/ti/mmc.env b/include/env/ti/mmc.env
+--- a/include/env/ti/mmc.env
++++ b/include/env/ti/mmc.env
+@@ -18,7 +18,6 @@ loadimage=load ${devtype} ${bootpart} ${loadaddr} ${bootdir}/${bootfile}
+ loadfdt=load ${devtype} ${bootpart} ${fdtaddr} ${bootdir}/dtb/${fdtfile}
+ get_fdt_mmc=load mmc ${bootpart} ${fdtaddr} ${bootdir}/dtb/${fdtfile}
+ envboot=if mmc dev ${mmcdev}; then
+-	if mmc rescan; then
+ 		echo SD/MMC found on device ${mmcdev};
+ 		if test -n "${loadbootscript}" && run loadbootscript; then
+ 			run bootscript;
+@@ -32,7 +31,6 @@ envboot=if mmc dev ${mmcdev}; then
+ 				run uenvcmd;
+ 			fi;
+ 		fi;
+-	fi;
+   fi;
+ mmcloados=
+ 	if test ${boot_fdt} = yes || test ${boot_fdt} = try; then
+-- 
+2.43.0

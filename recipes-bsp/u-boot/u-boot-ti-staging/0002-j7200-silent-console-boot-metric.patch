@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Wed, 19 Aug 2026 10:00:00 +0900
+Subject: [PATCH] j7200: silence U-Boot except final boot-time metric
+
+Enable silent mode by default for J7200 A72 U-Boot while leaving the Linux
+console enabled. Seed the A72 global time counter with time already spent
+in R5 SPL, then temporarily bypass silent mode to print only the continuous
+bootloader completion time immediately before handing control to Linux.
+
+Upstream-Status: Inappropriate [J7200 boot-time measurement]
+---
+ arch/arm/lib/bootm.c                    | 11 +++++++++++
+ board/ti/j721e/j721e.env               |  4 ++++
+ drivers/remoteproc/ti_k3_arm64_rproc.c | 20 ++++++++++++++++++++
+ 3 files changed, 36 insertions(+)
+
+diff --git a/arch/arm/lib/bootm.c b/arch/arm/lib/bootm.c
+--- a/arch/arm/lib/bootm.c
++++ b/arch/arm/lib/bootm.c
+@@ -25,6 +25,7 @@
+ #include <asm/byteorder.h>
+ #include <linux/libfdt.h>
+ #include <mapmem.h>
++#include <time.h>
+ #include <fdt_support.h>
+ #include <asm/bootm.h>
+ #include <asm/secure.h>
+@@ -67,6 +68,17 @@ static void announce_and_cleanup(int fake)
+ 
+ 	board_quiesce_devices();
+ 
++#ifdef CONFIG_ARM64
++	{
++		bool was_silent = gd->flags & GD_FLG_SILENT;
++
++		gd->flags &= ~GD_FLG_SILENT;
++		printf("BOOT_METRIC: BOOTLOADER_DONE_US=%lu\n",
++		       timer_get_boot_us());
++		if (was_silent)
++			gd->flags |= GD_FLG_SILENT;
++	}
++#endif
+ 	printf("\nStarting kernel ...%s\n\n", fake ?
+ 		"(fake run for tracing)" : "");
+ 	/*
+diff --git a/board/ti/j721e/j721e.env b/board/ti/j721e/j721e.env
+--- a/board/ti/j721e/j721e.env
++++ b/board/ti/j721e/j721e.env
+@@ -11,6 +11,10 @@ defined(CONFIG_TARGET_J721E_R5_EVM)
+ #include <env/ti/k3_rproc.env>
+ #endif
+ 
++#if CONFIG_TARGET_J7200_A72_EVM
++silent=1
++#endif
++
+ name_kern=Image
+ console=ttyS2,115200n8
+ args_all=setenv optargs ${optargs} earlycon=ns16550a,mmio32,0x02800000
+diff --git a/drivers/remoteproc/ti_k3_arm64_rproc.c b/drivers/remoteproc/ti_k3_arm64_rproc.c
+--- a/drivers/remoteproc/ti_k3_arm64_rproc.c
++++ b/drivers/remoteproc/ti_k3_arm64_rproc.c
+@@ -11,7 +11,9 @@
+ #include <remoteproc.h>
+ #include <errno.h>
+ #include <clk.h>
++#include <div64.h>
+ #include <reset.h>
++#include <time.h>
+ #include <asm/io.h>
+ #include <power-domain.h>
+ #include <dm/device_compat.h>
+@@ -23,6 +25,8 @@
+ #define INVALID_ID	0xffff
+ 
+ #define GTC_CNTCR_REG	0x0
++#define GTC_CNTCV_LO_REG	0x8
++#define GTC_CNTCV_HI_REG	0xc
+ #define GTC_CNTFID0_REG	0x20
+ #define GTC_CNTR_EN	0x3
+ 
+@@ -80,10 +84,26 @@ static int k3_arm64_load(struct udevice *dev, ulong addr, ulong size)
+ 	writel((u32)gtc_rate, rproc->gtc_base + GTC_CNTFID0_REG);
+ 
+ 	if (!board_is_resuming()) {
++		u64 initial_count;
++		ulong boot_us;
++
+ 		/* In case of a fresh boot, enable the timer here before starting
+ 		 * the remote core.
+ 		 */
++		boot_us = timer_get_us();
++		initial_count = (u64)boot_us * gtc_rate;
++		do_div(initial_count, 1000000);
++
++		/*
++		 * Continue the R5 SPL time base in the GTC used by A72 U-Boot
++		 * and Linux. This makes the final A72 metric include R5 SPL.
++		 */
++		writel(0, rproc->gtc_base + GTC_CNTCR_REG);
++		writel(lower_32_bits(initial_count),
++		       rproc->gtc_base + GTC_CNTCV_LO_REG);
++		writel(upper_32_bits(initial_count),
++		       rproc->gtc_base + GTC_CNTCV_HI_REG);
+ 		writel(GTC_CNTR_EN, rproc->gtc_base + GTC_CNTCR_REG);
+ 	}
+ 
+ 	/*
+-- 
+2.43.0
