@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000003 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Mon, 24 Aug 2026 13:30:00 +0900
+Subject: [PATCH] j7200: default to loglevel 3 without earlycon
+
+Keep the normal ttyS2 console, set the J7200 default optional kernel
+arguments to loglevel 3, and omit earlycon from args_all. Leave the
+existing behavior unchanged for other boards sharing this environment.
+
+Upstream-Status: Inappropriate [J7200 fast boot]
+Signed-off-by: SDK User <sdk-user@example.com>
+---
+ board/ti/j721e/j721e.env | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/board/ti/j721e/j721e.env b/board/ti/j721e/j721e.env
+--- a/board/ti/j721e/j721e.env
++++ b/board/ti/j721e/j721e.env
+@@ -14,11 +14,16 @@ defined(CONFIG_TARGET_J721E_R5_EVM)
+ 
+ #if CONFIG_TARGET_J7200_A72_EVM
+ silent=1
++optargs=loglevel=1
+ #endif
+ 
+ name_kern=Image
+ console=ttyS2,115200n8
++#if CONFIG_TARGET_J7200_A72_EVM
++args_all=setenv optargs ${optargs}
++#else
+ args_all=setenv optargs ${optargs} earlycon=ns16550a,mmio32,0x02800000
++#endif
+ 	${mtdparts}
+ run_kern=booti ${loadaddr} ${rd_spec} ${fdtaddr}
+ 
+-- 
+2.43.0
