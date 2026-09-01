@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000001 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Mon, 24 Aug 2026 13:30:00 +0900
+Subject: [PATCH] init: report total kernel boot time on arm64
+
+Capture the ARM physical architected counter at kernel entry and just
+before userspace init. These are the only retained Fast Boot measurement
+markers.
+
+Upstream-Status: Inappropriate [J7200 boot-time measurement]
+Signed-off-by: SDK User <sdk-user@example.com>
+---
+ init/main.c | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/init/main.c b/init/main.c
+--- a/init/main.c
++++ b/init/main.c
+@@ -102,6 +102,11 @@
+ #include <linux/randomize_kstack.h>
+ #include <linux/pidfs.h>
+ #include <linux/ptdump.h>
++#if defined(CONFIG_ARM64) && defined(CONFIG_ARM_ARCH_TIMER)
++#include <linux/math64.h>
++#include <clocksource/arm_arch_timer.h>
++#include <asm/arch_timer.h>
++#endif
+ #include <net/net_namespace.h>
+ 
+ #include <asm/io.h>
+@@ -116,6 +121,28 @@
+ 
+ static int kernel_init(void *);
+ 
++#if defined(CONFIG_ARM64) && defined(CONFIG_ARM_ARCH_TIMER)
++static u64 boot_metric_kernel_entry_count;
++static u64 boot_metric_kernel_done_count;
++
++static void boot_metric_report(void)
++{
++	u32 rate = arch_timer_get_rate();
++
++	if (!rate)
++		return;
++
++	pr_info("BOOT_METRIC: KERNEL_ENTRY_US=%llu\n",
++		(unsigned long long)mul_u64_u32_div(
++			boot_metric_kernel_entry_count, USEC_PER_SEC, rate));
++	pr_info("BOOT_METRIC: KERNEL_DONE_US=%llu\n",
++		(unsigned long long)mul_u64_u32_div(
++			boot_metric_kernel_done_count, USEC_PER_SEC, rate));
++}
++#else
++static inline void boot_metric_report(void) { }
++#endif
++
+ /*
+  * Debug helper: via this flag we know that we are in 'early bootup code'
+  * where only the boot processor is running with IRQ disabled.  This means
+@@ -917,6 +944,9 @@ void start_kernel(void)
+ 	char *command_line;
+ 	char *after_dashes;
+ 
++#if defined(CONFIG_ARM64) && defined(CONFIG_ARM_ARCH_TIMER)
++	boot_metric_kernel_entry_count = __arch_counter_get_cntpct();
++#endif
+ 	set_task_stack_end_magic(&init_task);
+ 	smp_setup_processor_id();
+ 	debug_objects_early_init();
+@@ -1500,6 +1530,10 @@ static int __ref kernel_init(void *unused)
+ 	numa_default_policy();
+ 
+ 	rcu_end_inkernel_boot();
++#if defined(CONFIG_ARM64) && defined(CONFIG_ARM_ARCH_TIMER)
++	boot_metric_kernel_done_count = __arch_counter_get_cntpct();
++#endif
++	boot_metric_report();
+ 
+ 	do_sysctl_args();
+ 
+-- 
+2.43.0

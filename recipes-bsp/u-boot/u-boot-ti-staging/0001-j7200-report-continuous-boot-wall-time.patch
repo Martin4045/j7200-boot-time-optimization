@@ -1,0 +1,95 @@
+From 0000000000000000000000000000000000000001 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Wed, 29 Jul 2026 12:00:00 +0900
+Subject: [PATCH] j7200: report continuous boot wall time
+
+Seed the A72 global time counter with the time already spent in R5 SPL.
+Report the resulting continuous time immediately before handing control to
+Linux.
+
+The time base starts when the R5 DM timer is initialized. It does not include
+power-rail stabilization or ROM execution before the R5 timer is available.
+
+Upstream-Status: Inappropriate [diagnostic instrumentation]
+---
+ arch/arm/lib/bootm.c                    |  5 +++++
+ drivers/remoteproc/ti_k3_arm64_rproc.c | 22 ++++++++++++++++++++++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/arch/arm/lib/bootm.c b/arch/arm/lib/bootm.c
+index 974cbfe8..8dbbda97 100644
+--- a/arch/arm/lib/bootm.c
++++ b/arch/arm/lib/bootm.c
+@@ -25,6 +25,7 @@
+ #include <asm/byteorder.h>
+ #include <linux/libfdt.h>
+ #include <mapmem.h>
++#include <time.h>
+ #include <fdt_support.h>
+ #include <asm/bootm.h>
+ #include <asm/secure.h>
+@@ -67,6 +68,10 @@ static void announce_and_cleanup(int fake)
+ 
+ 	board_quiesce_devices();
+ 
++#ifdef CONFIG_ARM64
++	printf("BOOT_METRIC: BOOTLOADER_DONE_US=%lu\n",
++	       timer_get_boot_us());
++#endif
+ 	printf("\nStarting kernel ...%s\n\n", fake ?
+ 		"(fake run for tracing)" : "");
+ 	/*
+diff --git a/drivers/remoteproc/ti_k3_arm64_rproc.c b/drivers/remoteproc/ti_k3_arm64_rproc.c
+index 4510a211..fc75090d 100644
+--- a/drivers/remoteproc/ti_k3_arm64_rproc.c
++++ b/drivers/remoteproc/ti_k3_arm64_rproc.c
+@@ -11,7 +11,9 @@
+ #include <remoteproc.h>
+ #include <errno.h>
+ #include <clk.h>
++#include <div64.h>
+ #include <reset.h>
++#include <time.h>
+ #include <asm/io.h>
+ #include <power-domain.h>
+ #include <dm/device_compat.h>
+@@ -23,6 +25,8 @@
+ #define INVALID_ID	0xffff
+ 
+ #define GTC_CNTCR_REG	0x0
++#define GTC_CNTCV_LO_REG	0x8
++#define GTC_CNTCV_HI_REG	0xc
+ #define GTC_CNTFID0_REG	0x20
+ #define GTC_CNTR_EN	0x3
+ 
+@@ -80,10 +84,28 @@ static int k3_arm64_load(struct udevice *dev, ulong addr, ulong size)
+ 	writel((u32)gtc_rate, rproc->gtc_base + GTC_CNTFID0_REG);
+ 
+ 	if (!board_is_resuming()) {
++		u64 initial_count;
++		ulong boot_us;
++
+ 		/* In case of a fresh boot, enable the timer here before starting
+ 		 * the remote core.
+ 		 */
++		boot_us = timer_get_us();
++		initial_count = (u64)boot_us * gtc_rate;
++		do_div(initial_count, 1000000);
++
++		/*
++		 * Continue the R5 SPL time base in the GTC used by A72 U-Boot
++		 * and Linux. This makes their raw architected-counter values
++		 * represent elapsed time since the R5 timer was initialized.
++		 */
++		writel(0, rproc->gtc_base + GTC_CNTCR_REG);
++		writel(lower_32_bits(initial_count),
++		       rproc->gtc_base + GTC_CNTCV_LO_REG);
++		writel(upper_32_bits(initial_count),
++		       rproc->gtc_base + GTC_CNTCV_HI_REG);
+ 		writel(GTC_CNTR_EN, rproc->gtc_base + GTC_CNTCR_REG);
++		printf("BOOT_METRIC: R5_GTC_SEED_US=%lu\n", boot_us);
+ 	}
+ 
+ 	/*
+-- 
+2.43.0

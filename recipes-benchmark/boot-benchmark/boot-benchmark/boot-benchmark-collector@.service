@@ -1,0 +1,14 @@
+[Unit]
+Description=Collect one controlled boot benchmark sample for %i
+After=%i
+ConditionPathExists=/var/lib/boot-benchmark/active
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/boot-benchmark collect
+TimeoutStartSec=90
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
