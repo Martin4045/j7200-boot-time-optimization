@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000004 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Wed, 2 Sep 2026 10:00:00 +0900
+Subject: [PATCH] j7200: add optimized boot coarse profiling
+
+Enable the existing U-Boot bootstage records on the J7200 A72 build and
+make the report visible while the normal U-Boot console remains silent.
+Name the OS-run boundary after the function containing it so the retained
+coarse boundaries are unambiguous:
+
+  reset -> board_init_f -> board_init_r -> main_loop -> bootm_start ->
+  boot_jump_linux -> start_kernel
+
+The continuous timer seeded by the existing J7200 metric patch makes the
+first A72 mark relative to the R5 timer origin. Print BOOTLOADER_DONE_US
+before the report so report UART time does not inflate that metric. The
+Linux KERNEL_ENTRY_US metric remains the authoritative measurement of
+actual start_kernel entry.
+
+This patch adds no boot-path optimization.
+
+Upstream-Status: Inappropriate [diagnostic instrumentation]
+Signed-off-by: SDK User <sdk-user@example.com>
+---
+ arch/arm/lib/bootm.c            | 8 ++++----
+ configs/j7200_evm_a72_defconfig | 2 ++
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm/lib/bootm.c b/arch/arm/lib/bootm.c
+--- a/arch/arm/lib/bootm.c
++++ b/arch/arm/lib/bootm.c
+@@ -57,9 +57,6 @@ static void announce_and_cleanup(int fake)
+ #ifdef CONFIG_BOOTSTAGE_FDT
+ 	bootstage_fdt_add_report();
+ #endif
+-#ifdef CONFIG_BOOTSTAGE_REPORT
+-	bootstage_report();
+-#endif
+ 
+ #ifdef CONFIG_USB_DEVICE
+ 	udc_disconnect();
+@@ -77,6 +74,9 @@ static void announce_and_cleanup(int fake)
+ 		gd->flags &= ~GD_FLG_SILENT;
+ 		printf("BOOT_METRIC: BOOTLOADER_DONE_US=%lu\n",
+ 		       timer_get_boot_us());
++#ifdef CONFIG_BOOTSTAGE_REPORT
++		bootstage_report();
++#endif
+ 		if (was_silent)
+ 			gd->flags |= GD_FLG_SILENT;
+ 	}
+@@ -309,7 +309,7 @@ static void boot_jump_linux(struct bootm_headers *images, int flag)
+ 
+ 	debug("## Transferring control to Linux (at address %lx)...\n",
+ 		(ulong) kernel_entry);
+-	bootstage_mark(BOOTSTAGE_ID_RUN_OS);
++	bootstage_mark_name(BOOTSTAGE_ID_RUN_OS, "boot_jump_linux");
+ 
+ 	announce_and_cleanup(fake);
+ 
+diff --git a/configs/j7200_evm_a72_defconfig b/configs/j7200_evm_a72_defconfig
+--- a/configs/j7200_evm_a72_defconfig
++++ b/configs/j7200_evm_a72_defconfig
+@@ -14,5 +14,7 @@ CONFIG_DM_GPIO=y
+ CONFIG_SPL_DM_SPI=y
+ CONFIG_DEFAULT_DEVICE_TREE="ti/k3-j7200-common-proc-board"
++CONFIG_BOOTSTAGE=y
++CONFIG_BOOTSTAGE_REPORT=y
+ CONFIG_OF_LIBFDT_OVERLAY=y
+ CONFIG_DM_RESET=y
+ CONFIG_SPL_MMC=y
+-- 
+2.43.0

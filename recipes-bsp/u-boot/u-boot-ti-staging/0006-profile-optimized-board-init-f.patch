@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000006 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Wed, 2 Sep 2026 14:00:00 +0900
+Subject: [PATCH] j7200: profile optimized board_init_f regions
+
+Keep the existing optimized configuration and add only coarse Bootstage
+boundaries around the remaining board_init_f work.  Reuse the existing dm_f
+accumulator instead of restoring the old per-node devicetree profiling, and
+separate console setup, DRAM/FDT memory discovery, reservations, relocation
+preparation, and the ARM64 relocation itself.
+
+The final relocation marker is placed immediately after returning through
+relocation_return and completing the architecture runtime setup.  This also
+separates relocation from the early board_init_r work which precedes the
+existing board_init_r marker.
+
+This patch adds no boot-path optimization and does not enable console output
+during the measured regions.
+
+Upstream-Status: Inappropriate [diagnostic instrumentation]
+Signed-off-by: SDK User <sdk-user@example.com>
+---
+ arch/arm/lib/crt0_64.S |  4 ++++
+ common/board_f.c       | 49 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 53 insertions(+)
+
+diff --git a/arch/arm/lib/crt0_64.S b/arch/arm/lib/crt0_64.S
+--- a/arch/arm/lib/crt0_64.S
++++ b/arch/arm/lib/crt0_64.S
+@@ -148,5 +148,9 @@ relocation_return:
+  */
+ 	bl	c_runtime_cpu_setup		/* still call old routine */
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	/* Separate ARM64 relocation from the early board_init_r sequence. */
++	bl	bootstage_mark_arm64_reloc_done
++#endif
+ #endif /* !CONFIG_XPL_BUILD */
+ #if !defined(CONFIG_XPL_BUILD) || CONFIG_IS_ENABLED(FRAMEWORK)
+ #if defined(CONFIG_XPL_BUILD)
+diff --git a/common/board_f.c b/common/board_f.c
+--- a/common/board_f.c
++++ b/common/board_f.c
+@@ -841,6 +841,27 @@ static int initf_dm(void)
+ 	return 0;
+ }
+ 
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++#define DEFINE_J7200_INITF_MARKER(_func, _name) \
++	static int _func(void) \
++	{ \
++		bootstage_mark_name(BOOTSTAGE_ID_ALLOC, _name); \
++		return 0; \
++	}
++
++DEFINE_J7200_INITF_MARKER(initf_mark_dm_done, "board_f_dm_done");
++DEFINE_J7200_INITF_MARKER(initf_mark_console_done, "board_f_console_done");
++DEFINE_J7200_INITF_MARKER(initf_mark_dram_start, "board_f_dram_start");
++DEFINE_J7200_INITF_MARKER(initf_mark_dram_done, "board_f_dram_done");
++DEFINE_J7200_INITF_MARKER(initf_mark_reserve_done, "board_f_reserve_done");
++DEFINE_J7200_INITF_MARKER(initf_mark_reloc_prep_done,
++                          "board_f_reloc_prep_done");
++DEFINE_J7200_INITF_MARKER(initf_mark_initcalls_done,
++                          "board_f_initcalls_done");
++
++#undef DEFINE_J7200_INITF_MARKER
++#endif
++
+ /* Architecture-specific memory reservation */
+ __weak int reserve_arch(void)
+ {
+@@ -899,6 +920,9 @@ static const init_fnc_t init_sequence_f[] = {
+ 	arch_cpu_init,		/* basic arch cpu dependent setup */
+ 	mach_cpu_init,		/* SoC/machine dependent CPU setup */
+ 	initf_dm,
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	initf_mark_dm_done,
++#endif
+ #if defined(CONFIG_BOARD_EARLY_INIT_F)
+ 	board_early_init_f,
+ #endif
+@@ -916,6 +940,9 @@ static const init_fnc_t init_sequence_f[] = {
+ 	init_baud_rate,		/* initialze baudrate settings */
+ 	serial_init,		/* serial communications setup */
+ 	console_init_f,		/* stage 1 init of console */
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	initf_mark_console_done,
++#endif
+ 	display_options,	/* say that we are here */
+ 	display_text_info,	/* show debugging info if required */
+ 	checkcpu,
+@@ -937,7 +964,13 @@ static const init_fnc_t init_sequence_f[] = {
+ 	init_func_i2c,
+ #endif
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	initf_mark_dram_start,
++#endif
+ 	announce_dram_init,
+ 	dram_init,		/* configure available RAM banks */
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	initf_mark_dram_done,
++#endif
+ #ifdef CONFIG_POST
+ 	post_init_f,
+ #endif
+@@ -991,6 +1024,9 @@ static const init_fnc_t init_sequence_f[] = {
+ 	reserve_stacks,
+ 	dram_init_banksize,
+ 	show_dram_config,
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	initf_mark_reserve_done,
++#endif
+ 	INIT_FUNC_WATCHDOG_RESET
+ 	setup_bdinfo,
+ 	display_new_sp,
+@@ -1001,6 +1037,9 @@ static const init_fnc_t init_sequence_f[] = {
+ 	reloc_bootstage,
+ 	reloc_bloblist,
+ 	setup_reloc,
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	initf_mark_reloc_prep_done,
++#endif
+ #if defined(CONFIG_X86) || defined(CONFIG_ARC)
+ 	copy_uboot_to_ram,
+ 	do_elf_reloc_fixups,
+@@ -1018,9 +1057,19 @@ static const init_fnc_t init_sequence_f[] = {
+ 	cyclic_unregister_all,
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	initf_mark_initcalls_done,
++#endif
+ #if !defined(CONFIG_ARM) && !defined(CONFIG_SANDBOX)
+ 	jump_to_copy,
+ #endif
+ 	NULL,
+ };
++
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++void bootstage_mark_arm64_reloc_done(void)
++{
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "arm64_reloc_done");
++}
++#endif
+ 
+ void board_init_f(ulong boot_flags)
+ {
+-- 
+2.43.0

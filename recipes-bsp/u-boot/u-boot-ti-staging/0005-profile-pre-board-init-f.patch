@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000005 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Wed, 2 Sep 2026 11:00:00 +0900
+Subject: [PATCH] j7200: profile A72 execution before board_init_f marker
+
+The Bootstage reset record is a synthetic zero timestamp, while the J7200
+A72 architected counter continues the time seeded by R5 SPL. Consequently,
+reset-to-board_init_f includes earlier firmware stages and does not measure
+only A72 U-Boot startup.
+
+Bootstage storage is not available during the ARM64 reset and CRT paths.
+Capture the real CNTPCT_EL0 value at three coarse boundaries, preserve the
+values until global data is ready, and add them to Bootstage later using
+their original timestamps. This separates inherited time from generic
+ARMv8 setup, initial stack/global-data setup, and the early board_init_f
+init sequence without adding serial output.
+
+Upstream-Status: Inappropriate [diagnostic instrumentation]
+Signed-off-by: SDK User <sdk-user@example.com>
+---
+ arch/arm/cpu/armv8/start.S         | 10 ++++++++++
+ arch/arm/include/asm/global_data.h |  5 +++++
+ arch/arm/lib/crt0_64.S             |  9 +++++++++
+ common/bootstage.c                 | 27 +++++++++++++++++++++++++++
+ include/bootstage.h                |  5 +++++
+ 5 files changed, 56 insertions(+)
+
+diff --git a/arch/arm/cpu/armv8/start.S b/arch/arm/cpu/armv8/start.S
+index d3a8a7c4787..ce8929df9be 100644
+--- a/arch/arm/cpu/armv8/start.S
++++ b/arch/arm/cpu/armv8/start.S
+@@ -53,6 +53,11 @@ _bss_end_ofs:
+ 	.quad	__bss_end - _start
+ 
+ reset:
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	/* Preserve the first usable A72 architected-counter sample. */
++	isb
++	mrs	x19, cntpct_el0
++#endif
+ 	/* Allow the board to save important registers */
+ 	b	save_boot_params
+ .globl	save_boot_params_ret
+@@ -204,6 +209,11 @@ slave_cpu:
+ 	br	x0			/* branch to the given address */
+ #endif /* CONFIG_ARMV8_MULTIENTRY */
+ master_cpu:
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	/* Bracket the generic ARMv8 reset and low-level setup. */
++	isb
++	mrs	x20, cntpct_el0
++#endif
+ 	msr	SPSel, #1		/* make sure we use SP_ELx */
+ 	bl	_main
+ 
+diff --git a/arch/arm/include/asm/global_data.h b/arch/arm/include/asm/global_data.h
+index edc8ff08c1d..4fcb6a46c27 100644
+--- a/arch/arm/include/asm/global_data.h
++++ b/arch/arm/include/asm/global_data.h
+@@ -51,6 +51,11 @@ struct arch_global_data {
+ 	unsigned int tbl;
+ 	unsigned long lastinc;
+ 	unsigned long long timer_reset_value;
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	unsigned long bootstage_a72_entry_us;
++	unsigned long bootstage_a72_arch_done_us;
++	unsigned long bootstage_a72_gd_ready_us;
++#endif
+ #if !(CONFIG_IS_ENABLED(SYS_ICACHE_OFF) && CONFIG_IS_ENABLED(SYS_DCACHE_OFF))
+ 	unsigned long tlb_addr;
+ 	unsigned long tlb_size;
+diff --git a/arch/arm/lib/crt0_64.S b/arch/arm/lib/crt0_64.S
+index 32401f544a7..09f4fa9dbe3 100644
+--- a/arch/arm/lib/crt0_64.S
++++ b/arch/arm/lib/crt0_64.S
+@@ -92,6 +92,15 @@ ENTRY(_main)
+ 	mov	x18, x0
+ 	bl	board_init_f_init_reserve
+ 
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++	/* Save real counter samples until Bootstage storage exists. */
++	isb
++	mrs	x2, cntpct_el0
++	mov	x0, x19
++	mov	x1, x20
++	bl	bootstage_set_pre_board_init_f
++#endif
++
+ #if defined(CONFIG_DEBUG_UART) && CONFIG_IS_ENABLED(SERIAL)
+ 	bl	debug_uart_init
+ #endif
+diff --git a/common/bootstage.c b/common/bootstage.c
+index 4532100acea..0ac2079c0c8 100644
+--- a/common/bootstage.c
++++ b/common/bootstage.c
+@@ -16,6 +16,7 @@
+ #include <malloc.h>
+ #include <sort.h>
+ #include <spl.h>
++#include <time.h>
+ #include <asm/global_data.h>
+ #include <linux/compiler.h>
+ #include <linux/libfdt.h>
+@@ -542,7 +543,33 @@ int bootstage_init(bool first)
+ 	if (first) {
+ 		data->next_id = BOOTSTAGE_ID_USER;
+ 		bootstage_add_record(BOOTSTAGE_ID_AWAKE, "reset", 0, 0);
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++		bootstage_add_record(BOOTSTAGE_ID_ALLOC, "a72_entry",
++				     BOOTSTAGEF_ALLOC,
++				     gd->arch.bootstage_a72_entry_us);
++		bootstage_add_record(BOOTSTAGE_ID_ALLOC,
++				     "a72_arch_setup_done", BOOTSTAGEF_ALLOC,
++				     gd->arch.bootstage_a72_arch_done_us);
++		bootstage_add_record(BOOTSTAGE_ID_ALLOC, "a72_gd_ready",
++				     BOOTSTAGEF_ALLOC,
++				     gd->arch.bootstage_a72_gd_ready_us);
++#endif
+ 	}
+ 
+ 	return 0;
+ }
++
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++void bootstage_set_pre_board_init_f(ulong entry_ticks, ulong arch_done_ticks,
++				    ulong gd_ready_ticks)
++{
++	ulong rate = get_tbclk();
++
++	gd->arch.bootstage_a72_entry_us =
++		(u64)entry_ticks * 1000000 / rate;
++	gd->arch.bootstage_a72_arch_done_us =
++		(u64)arch_done_ticks * 1000000 / rate;
++	gd->arch.bootstage_a72_gd_ready_us =
++		(u64)gd_ready_ticks * 1000000 / rate;
++}
++#endif
+diff --git a/include/bootstage.h b/include/bootstage.h
+index 3300ca0248a..d2c7912b13d 100644
+--- a/include/bootstage.h
++++ b/include/bootstage.h
+@@ -271,6 +271,11 @@ int bootstage_relocate(void *to);
+ ulong bootstage_add_record(enum bootstage_id id, const char *name,
+ 			   int flags, ulong mark);
+ 
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++void bootstage_set_pre_board_init_f(ulong entry_ticks, ulong arch_done_ticks,
++				    ulong gd_ready_ticks);
++#endif
++
+ /**
+  * Mark a time stamp for the current boot stage.
+  */
+-- 
+2.43.0
