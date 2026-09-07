@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Mon, 7 Sep 2026 11:00:00 +0900
+Subject: [PATCH] init: import U-Boot boot metrics
+
+Read the raw R5-seed and bootloader-done samples passed by U-Boot in
+/chosen and expose them in the kernel log. This makes all four markers
+available to the target-side benchmark collector.
+
+Upstream-Status: Inappropriate [J7200 boot-time measurement]
+---
+ init/main.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/init/main.c b/init/main.c
+index 111111111111..222222222222 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -105,5 +105,6 @@
+ #include <linux/pidfs.h>
+ #include <linux/ptdump.h>
++#include <linux/of.h>
+ #if defined(CONFIG_ARM64) && defined(CONFIG_ARM_ARCH_TIMER)
+ #include <linux/math64.h>
+ #include <clocksource/arm_arch_timer.h>
+@@ -127,10 +128,25 @@ static u64 boot_metric_kernel_done_count;
+ static void boot_metric_report(void)
+ {
+ 	u32 rate = arch_timer_get_rate();
++	u64 r5_gtc_seed_us;
++	u64 bootloader_done_us;
+ 
+ 	if (!rate)
+ 		return;
+ 
++	if (!of_chosen ||
++	    of_property_read_u64(of_chosen, "ti,r5-gtc-seed-us",
++				 &r5_gtc_seed_us) ||
++	    of_property_read_u64(of_chosen, "ti,bootloader-done-us",
++				 &bootloader_done_us)) {
++		pr_warn("BOOT_METRIC: U-Boot markers unavailable\n");
++	} else {
++		pr_info("BOOT_METRIC: R5_GTC_SEED_US=%llu\n",
++			(unsigned long long)r5_gtc_seed_us);
++		pr_info("BOOT_METRIC: BOOTLOADER_DONE_US=%llu\n",
++			(unsigned long long)bootloader_done_us);
++	}
++
+ 	pr_info("BOOT_METRIC: KERNEL_ENTRY_US=%llu\n",
+ 		(unsigned long long)mul_u64_u32_div(
+ 			boot_metric_kernel_entry_count, USEC_PER_SEC, rate));
+-- 
+2.43.0

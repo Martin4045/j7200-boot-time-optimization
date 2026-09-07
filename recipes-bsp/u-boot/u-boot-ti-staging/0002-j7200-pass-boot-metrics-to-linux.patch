@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Mon, 7 Sep 2026 11:00:00 +0900
+Subject: [PATCH] j7200: pass boot metrics to Linux
+
+Retain the R5 GTC seed sample in the existing K3 MCU scratchpad. At the
+final A72 marker, copy it and the bootloader-done sample to /chosen so
+Linux can expose both values to a target-side benchmark collector.
+
+The measurement markers keep their existing positions and meanings.
+
+Upstream-Status: Inappropriate [diagnostic instrumentation]
+---
+ arch/arm/lib/bootm.c                    | 43 ++++++++++++++++++++++---
+ drivers/remoteproc/ti_k3_arm64_rproc.c | 15 +++++++++
+ 2 files changed, 54 insertions(+), 4 deletions(-)
+
+Index: git/arch/arm/lib/bootm.c
+===================================================================
+--- git.orig/arch/arm/lib/bootm.c
++++ git/arch/arm/lib/bootm.c
+@@ -23,6 +23,7 @@
+ #include <image.h>
+ #include <u-boot/zlib.h>
+ #include <asm/byteorder.h>
++#include <asm/io.h>
+ #include <linux/libfdt.h>
+ #include <mapmem.h>
+ #include <time.h>
+@@ -41,6 +42,25 @@
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
++#if defined(CONFIG_ARM64) && defined(CONFIG_SOC_K3_J721E)
++#define BOOT_METRIC_SCRATCH_MAGIC	0x424d4554
++#define BOOT_METRIC_SCRATCH_ADDR		(CONFIG_SYS_K3_MCU_SCRATCHPAD_BASE + \
++					 CONFIG_SYS_K3_MCU_SCRATCHPAD_SIZE - 16)
++#define BOOT_METRIC_SEED_LO_ADDR		(BOOT_METRIC_SCRATCH_ADDR + 8)
++#define BOOT_METRIC_SEED_HI_ADDR		(BOOT_METRIC_SCRATCH_ADDR + 12)
++
++static void boot_metric_add_fdt(void *fdt, u64 seed_us, u64 done_us)
++{
++	int chosen;
++
++	chosen = fdt_path_offset(fdt, "/chosen");
++	if (chosen < 0 ||
++	    fdt_setprop_u64(fdt, chosen, "ti,r5-gtc-seed-us", seed_us) ||
++	    fdt_setprop_u64(fdt, chosen, "ti,bootloader-done-us", done_us))
++		printf("BOOT_METRIC: failed to publish markers in FDT\n");
++}
++#endif
++
+ static struct tag *params;
+ 
+ __weak void board_quiesce_devices(void)
+@@ -52,7 +72,7 @@ __weak void board_quiesce_devices(void)
+  *
+  * @fake: non-zero to do everything except actually boot
+  */
+-static void announce_and_cleanup(int fake)
++static void announce_and_cleanup(struct bootm_headers *images, int fake)
+ {
+ 	bootstage_mark_name(BOOTSTAGE_ID_BOOTM_HANDOFF, "start_kernel");
+ #ifdef CONFIG_BOOTSTAGE_FDT
+@@ -68,9 +88,22 @@ static void announce_and_cleanup(int fak
+ 
+ 	board_quiesce_devices();
+ 
+-#ifdef CONFIG_ARM64
+-	printf("BOOT_METRIC: BOOTLOADER_DONE_US=%lu\n",
+-	       timer_get_boot_us());
++#if defined(CONFIG_ARM64) && defined(CONFIG_SOC_K3_J721E)
++	u64 done_us = timer_get_boot_us();
++
++	if (readl(BOOT_METRIC_SCRATCH_ADDR) == BOOT_METRIC_SCRATCH_MAGIC) {
++		u64 seed_us = (u64)readl(BOOT_METRIC_SEED_LO_ADDR) |
++			      ((u64)readl(BOOT_METRIC_SEED_HI_ADDR) << 32);
++
++		if (images->ft_addr)
++			boot_metric_add_fdt(images->ft_addr, seed_us, done_us);
++	} else {
++		printf("BOOT_METRIC: R5 GTC seed unavailable\n");
++	}
++
++	printf("BOOT_METRIC: BOOTLOADER_DONE_US=%llu\n", done_us);
++#elif defined(CONFIG_ARM64)
++	printf("BOOT_METRIC: BOOTLOADER_DONE_US=%lu\n", timer_get_boot_us());
+ #endif
+ 	printf("\nStarting kernel ...%s\n\n", fake ?
+ 		"(fake run for tracing)" : "");
+@@ -306,7 +339,7 @@ static void boot_jump_linux(struct bootm
+ 		(ulong) kernel_entry);
+ 	bootstage_mark(BOOTSTAGE_ID_RUN_OS);
+ 
+-	announce_and_cleanup(fake);
++	announce_and_cleanup(images, fake);
+ 
+ 	if (!fake) {
+ #ifdef CONFIG_ARMV8_PSCI
+@@ -356,7 +389,7 @@ static void boot_jump_linux(struct bootm
+ 	debug("## Transferring control to Linux (at address %08lx)" \
+ 		"...\n", (ulong) kernel_entry);
+ 	bootstage_mark(BOOTSTAGE_ID_RUN_OS);
+-	announce_and_cleanup(fake);
++	announce_and_cleanup(images, fake);
+ 
+ 	if (CONFIG_IS_ENABLED(OF_LIBFDT) && images->ft_len)
+ 		r2 = (unsigned long)images->ft_addr;
+Index: git/drivers/remoteproc/ti_k3_arm64_rproc.c
+===================================================================
+--- git.orig/drivers/remoteproc/ti_k3_arm64_rproc.c
++++ git/drivers/remoteproc/ti_k3_arm64_rproc.c
+@@ -30,6 +30,12 @@
+ #define GTC_CNTFID0_REG	0x20
+ #define GTC_CNTR_EN	0x3
+ 
++#define BOOT_METRIC_SCRATCH_MAGIC	0x424d4554
++#define BOOT_METRIC_SCRATCH_ADDR		(CONFIG_SYS_K3_MCU_SCRATCHPAD_BASE + \
++					 CONFIG_SYS_K3_MCU_SCRATCHPAD_SIZE - 16)
++#define BOOT_METRIC_SEED_LO_ADDR		(BOOT_METRIC_SCRATCH_ADDR + 8)
++#define BOOT_METRIC_SEED_HI_ADDR		(BOOT_METRIC_SCRATCH_ADDR + 12)
++
+ /**
+  * struct k3_arm64_privdata - Structure representing Remote processor data.
+  * @rproc_pwrdmn:	rproc power domain data
+@@ -105,6 +111,13 @@ static int k3_arm64_load(struct udevice
+ 		writel(upper_32_bits(initial_count),
+ 		       rproc->gtc_base + GTC_CNTCV_HI_REG);
+ 		writel(GTC_CNTR_EN, rproc->gtc_base + GTC_CNTCR_REG);
++
++		/* Retain the unrounded source sample for A72 and Linux. */
++		writel(lower_32_bits((u64)boot_us),
++		       BOOT_METRIC_SEED_LO_ADDR);
++		writel(upper_32_bits((u64)boot_us),
++		       BOOT_METRIC_SEED_HI_ADDR);
++		writel(BOOT_METRIC_SCRATCH_MAGIC, BOOT_METRIC_SCRATCH_ADDR);
+ 		printf("BOOT_METRIC: R5_GTC_SEED_US=%lu\n", boot_us);
+ 	}
+ 

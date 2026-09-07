@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000003 Mon Sep 17 00:00:00 2001
+From: SDK User <sdk-user@example.com>
+Date: Mon, 7 Sep 2026 11:30:00 +0900
+Subject: [PATCH] timekeeping: report GTC to monotonic bridge
+
+Extend the existing timekeeping snapshot with CLOCK_MONOTONIC. The
+monotonic value and clocksource cycles are then both calculated from the
+same counter read under the timekeeper sequence lock.
+
+Report that cross-timestamp with the boot metrics when the selected
+clocksource is the ARM architected counter. It provides an exact bridge,
+at the reported microsecond resolution, from the seeded GTC timeline to
+the systemd CLOCK_MONOTONIC timestamps.
+
+Upstream-Status: Inappropriate [J7200 boot-time measurement]
+---
+ include/linux/timekeeping.h |  2 ++
+ init/main.c                 | 18 ++++++++++++++++++
+ kernel/time/timekeeping.c   |  3 +++
+ 3 files changed, 23 insertions(+)
+
+diff --git a/include/linux/timekeeping.h b/include/linux/timekeeping.h
+index 111111111111..222222222222 100644
+--- a/include/linux/timekeeping.h
++++ b/include/linux/timekeeping.h
+@@ -275,6 +275,7 @@ struct system_device_crosststamp {
+  *				 counter value
+  * @cycles:	Clocksource counter value to produce the system times
+  * @real:	Realtime system time
++ * @mono:	Monotonic system time
+  * @raw:	Monotonic raw system time
+  * @cs_id:	Clocksource ID
+  * @clock_was_set_seq:	The sequence number of clock-was-set events
+@@ -283,5 +284,6 @@ struct system_time_snapshot {
+ 	u64			cycles;
+ 	ktime_t			real;
++	ktime_t			mono;
+ 	ktime_t			raw;
+ 	enum clocksource_ids	cs_id;
+ 	unsigned int		clock_was_set_seq;
+diff --git a/kernel/time/timekeeping.c b/kernel/time/timekeeping.c
+index 333333333333..444444444444 100644
+--- a/kernel/time/timekeeping.c
++++ b/kernel/time/timekeeping.c
+@@ -961,6 +961,7 @@ void ktime_get_snapshot(struct system_time_snapshot *systime_snapshot)
+ 	struct timekeeper *tk = &tk_core.timekeeper;
+ 	unsigned int seq;
+ 	ktime_t base_raw;
++	ktime_t base_mono;
+ 	ktime_t base_real;
+ 	u64 nsec_raw;
+ 	u64 nsec_real;
+@@ -974,6 +975,7 @@ void ktime_get_snapshot(struct system_time_snapshot *systime_snapshot)
+ 		systime_snapshot->cs_id = tk->tkr_mono.clock->id;
+ 		systime_snapshot->cs_was_changed_seq = tk->cs_was_changed_seq;
+ 		systime_snapshot->clock_was_set_seq = tk->clock_was_set_seq;
++		base_mono = tk->tkr_mono.base;
+ 		base_real = ktime_add(tk->tkr_mono.base,
+ 				      tk_core.timekeeper.offs_real);
+ 		base_raw = tk->tkr_raw.base;
+@@ -983,6 +985,7 @@ void ktime_get_snapshot(struct system_time_snapshot *systime_snapshot)
+ 
+ 	systime_snapshot->cycles = now;
+ 	systime_snapshot->real = ktime_add_ns(base_real, nsec_real);
++	systime_snapshot->mono = ktime_add_ns(base_mono, nsec_real);
+ 	systime_snapshot->raw = ktime_add_ns(base_raw, nsec_raw);
+ }
+ EXPORT_SYMBOL_GPL(ktime_get_snapshot);
+diff --git a/init/main.c b/init/main.c
+index 555555555555..666666666666 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -106,5 +106,6 @@
+ #include <linux/ptdump.h>
+ #include <linux/of.h>
++#include <linux/timekeeping.h>
+ #if defined(CONFIG_ARM64) && defined(CONFIG_ARM_ARCH_TIMER)
+ #include <linux/math64.h>
+ #include <clocksource/arm_arch_timer.h>
+@@ -129,8 +130,11 @@ static u64 boot_metric_kernel_done_count;
+ static void boot_metric_report(void)
+ {
+ 	u32 rate = arch_timer_get_rate();
++	struct system_time_snapshot snapshot;
+ 	u64 r5_gtc_seed_us;
+ 	u64 bootloader_done_us;
++	u64 clock_bridge_gtc_us;
++	u64 clock_bridge_monotonic_us;
+ 
+ 	if (!rate)
+ 		return;
+@@ -148,6 +153,19 @@ static void boot_metric_report(void)
+ 			(unsigned long long)bootloader_done_us);
+ 	}
+ 
++	ktime_get_snapshot(&snapshot);
++	if (snapshot.cs_id != CSID_ARM_ARCH_COUNTER) {
++		pr_warn("BOOT_METRIC: ARM architected clock bridge unavailable\n");
++	} else {
++		clock_bridge_gtc_us = mul_u64_u32_div(
++			snapshot.cycles, USEC_PER_SEC, rate);
++		clock_bridge_monotonic_us = ktime_to_us(snapshot.mono);
++		pr_info("BOOT_METRIC: CLOCK_BRIDGE_GTC_US=%llu\n",
++			(unsigned long long)clock_bridge_gtc_us);
++		pr_info("BOOT_METRIC: CLOCK_BRIDGE_MONOTONIC_US=%llu\n",
++			(unsigned long long)clock_bridge_monotonic_us);
++	}
++
+ 	pr_info("BOOT_METRIC: KERNEL_ENTRY_US=%llu\n",
+ 		(unsigned long long)mul_u64_u32_div(
+ 			boot_metric_kernel_entry_count, USEC_PER_SEC, rate));
+-- 
+2.43.0
