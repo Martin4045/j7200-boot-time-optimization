@@ -1,0 +1,39 @@
+From 794f74bed478f9ad0bc65ce123b9eb9f50a8f434 Mon Sep 17 00:00:00 2001
+From: G Spark <gspark@example.com>
+Date: Mon, 7 Sep 2026 14:30:00 +0900
+Subject: [PATCH] j7200: use minimal A72 environment
+
+The fixed J7200 SD boot command is supplied by CONFIG_BOOTCOMMAND and uses
+only compiled commands plus the temporary partition UUID variable.  Do not
+compile and import the generic MMC override, UFS, DFU, overlay, CPSW GPIO,
+and late remoteproc environment for this target.
+
+Leave the shared J721E and R5 environments unchanged.
+
+Signed-off-by: G Spark <gspark@example.com>
+---
+ board/ti/j721e/j721e.env | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/board/ti/j721e/j721e.env b/board/ti/j721e/j721e.env
+index 0dcfd32d18..0dfa073151 100644
+--- a/board/ti/j721e/j721e.env
++++ b/board/ti/j721e/j721e.env
+@@ -1,3 +1,9 @@
++#if CONFIG_TARGET_J7200_A72_EVM
++/*
++ * The SD-only boot path is CONFIG_BOOTCOMMAND.  Keep the compiled default
++ * environment empty so full U-Boot does not import unused generic scripts.
++ */
++#else
+ #include <env/ti/ti_common.env>
+ #include <env/ti/mmc.env>
+ #include <env/ti/ufs.env>
+@@ -63,3 +69,5 @@ rproc_fw_binaries= 1 /lib/firmware/j7-mcu-r5f0_1-fw 2 /lib/firmware/j7-main-r5
+ #if CONFIG_TARGET_J7200_A72_EVM
+ rproc_fw_binaries= 1 /lib/firmware/j7200-mcu-r5f0_1-fw 2 /lib/firmware/j7200-main-r5f0_0-fw 3 /lib/firmware/j7200-main-r5f0_1-fw
+ #endif
++
++#endif
+-- 
+2.43.0

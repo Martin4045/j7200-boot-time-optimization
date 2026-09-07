@@ -1,0 +1,32 @@
+From 4d76c8fb977670012a8c08a91c8feec8df14cfb3 Mon Sep 17 00:00:00 2001
+From: G Spark <gspark@example.com>
+Date: Mon, 7 Sep 2026 13:40:00 +0900
+Subject: [PATCH] j7200: skip full U-Boot board late detection
+
+The minimal J7200 build uses a fixed DTB and does not use Ethernet MACs or
+daughtercard overlays.  Do not force board_late_init() into full A72 U-Boot;
+that hook reads the SOM EEPROM and scans all daughtercard EEPROM addresses.
+
+This does not change R5 or A72 SPL board detection.  Those stages retain
+TI_I2C_BOARD_DETECT for their single-board FIT selection and platform setup.
+
+Signed-off-by: G Spark <gspark@example.com>
+---
+ arch/arm/mach-k3/j721e/Kconfig | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/arch/arm/mach-k3/j721e/Kconfig b/arch/arm/mach-k3/j721e/Kconfig
+index f952440c85..63f3e8eb6e 100644
+--- a/arch/arm/mach-k3/j721e/Kconfig
++++ b/arch/arm/mach-k3/j721e/Kconfig
+@@ -33,7 +33,6 @@ config TARGET_J7200_A72_EVM
+ 	bool "TI K3 based J7200 EVM running on A72"
+ 	select ARM64
+ 	select SOC_K3_J721E_J7200
+-	select BOARD_LATE_INIT
+ 	imply TI_I2C_BOARD_DETECT
+ 	select SYS_DISABLE_DCACHE_OPS
+ 	select BINMAN
+-- 
+2.43.0
+

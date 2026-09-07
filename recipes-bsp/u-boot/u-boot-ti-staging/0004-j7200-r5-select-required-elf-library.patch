@@ -1,0 +1,33 @@
+From f516792037046f68b407392e96b42430084c17b5 Mon Sep 17 00:00:00 2001
+From: G Spark <gspark@example.com>
+Date: Mon, 7 Sep 2026 14:05:00 +0900
+Subject: [PATCH] j7200: r5: select required ELF library
+
+arch/arm/mach-k3/r5/common.c unconditionally uses valid_elf_image() and
+load_elf_image_phdr() to validate and load the DM firmware before starting
+the A72.  The J7200 R5 defconfig currently obtains lib/elf.o only as a side
+effect of CMD_ELF.
+
+Model the platform dependency directly so a minimal SPL can retain the ELF
+loader without exposing the unrelated bootelf command.
+
+Signed-off-by: G Spark <gspark@example.com>
+---
+ arch/arm/mach-k3/j721e/Kconfig | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm/mach-k3/j721e/Kconfig b/arch/arm/mach-k3/j721e/Kconfig
+index 63f3e8eb6e..74d0ae59ec 100644
+--- a/arch/arm/mach-k3/j721e/Kconfig
++++ b/arch/arm/mach-k3/j721e/Kconfig
+@@ -44,6 +44,7 @@ config TARGET_J7200_R5_EVM
+ 	select K3_LOAD_SYSFW
+ 	select RAM
+ 	select SPL_RAM
++	select LIB_ELF
+ 	select K3_DDRSS
+ 	select BINMAN
+ 	imply SYS_K3_SPL_ATF
+-- 
+2.43.0
+
