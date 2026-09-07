@@ -1,0 +1,81 @@
+From 2ea23ad49e8d723d1e4e6adfc1fa27a01b772808 Mon Sep 17 00:00:00 2001
+From: Boot Time Experiment <boot-time@example.com>
+Date: Mon, 7 Sep 2026 18:00:00 +0900
+Subject: [PATCH] J7200: trace A72 SPL MMC payload load
+
+Add narrowly scoped temporary diagnostics around the A72 SPL path which
+initializes the SD card and loads u-boot.img. These messages deliberately
+bypass the normal SPL progress-message policy so a silent build can identify
+the exact failed boundary. R5 SPL and full U-Boot are unaffected.
+
+Signed-off-by: Boot Time Experiment <boot-time@example.com>
+---
+ common/spl/spl_mmc.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/common/spl/spl_mmc.c b/common/spl/spl_mmc.c
+index 2c05080c8d..b31210bcaf 100644
+--- a/common/spl/spl_mmc.c
++++ b/common/spl/spl_mmc.c
+@@ -17,6 +17,13 @@
+ #include <image.h>
+ #include <imx_container.h>
++
++#if defined(CONFIG_SPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++#define J7200_A72_MMC_DIAG(fmt, ...) \
++	printf("BOOT_DIAG: A72_SPL: " fmt, ##__VA_ARGS__)
++#else
++#define J7200_A72_MMC_DIAG(fmt, ...) do { } while (0)
++#endif
+ 
+ static ulong h_spl_load_read(struct spl_load_info *load, ulong off,
+ 			     ulong size, void *buf)
+ {
+@@ -373,16 +380,25 @@ int spl_mmc_load(struct spl_image_info *spl_image,
+ 	__maybe_unused int part = 0;
+ 	int mmc_dev;
+ 
++	J7200_A72_MMC_DIAG("loader entry boot_device=%u file=%s\n",
++			     bootdev->boot_device, filename ? filename : "<raw>");
++
+ 	/* Perform peripheral init only once for an mmc device */
+ 	mmc_dev = spl_mmc_get_device_index(bootdev->boot_device);
++	J7200_A72_MMC_DIAG("selected mmc_dev=%d cached=%d\n", mmc_dev,
++			     mmc != NULL);
+ 	log_debug("boot_device=%d, mmc_dev=%d\n", bootdev->boot_device,
+ 		  mmc_dev);
+ 	if (!mmc || spl_mmc_get_mmc_devnum(mmc) != mmc_dev) {
+ 		ret = spl_mmc_find_device(&mmc, mmc_dev);
++		J7200_A72_MMC_DIAG("find device ret=%d mmc=%p\n", ret, mmc);
+ 		if (ret)
+ 			return ret;
+ 
++		J7200_A72_MMC_DIAG("mmc_init begin\n");
+ 		ret = mmc_init(mmc);
++		J7200_A72_MMC_DIAG("mmc_init end ret=%d is_sd=%d mode=%d\n",
++				     ret, IS_SD(mmc), mmc->selected_mode);
+ 		if (ret) {
+ 			mmc = NULL;
+ 			printf("spl: mmc init failed with error: %d\n", ret);
+@@ -391,6 +407,8 @@ int spl_mmc_load(struct spl_image_info *spl_image,
+ 	}
+ 
+ 	boot_mode = spl_mmc_boot_mode(mmc, bootdev->boot_device);
++	J7200_A72_MMC_DIAG("boot mode=%u, FAT partition=%d\n", boot_mode,
++			     CONFIG_SYS_MMCSD_FS_BOOT_PARTITION);
+ 	ret = -EINVAL;
+ 	switch (boot_mode) {
+ 	case MMCSD_MODE_EMMCBOOT:
+@@ -436,7 +454,10 @@ int spl_mmc_load(struct spl_image_info *spl_image,
+ 	case MMCSD_MODE_FS:
+ 		debug("spl: mmc boot mode: fs\n");
+ 
++		J7200_A72_MMC_DIAG("FAT/FIT load begin file=%s\n",
++				     filename ? filename : "<null>");
+ 		ret = spl_mmc_do_fs_boot(spl_image, bootdev, mmc, filename);
++		J7200_A72_MMC_DIAG("FAT/FIT load end ret=%d\n", ret);
+ 		if (!ret)
+ 			return 0;
+ 
+-- 
+2.43.0
