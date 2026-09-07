@@ -6,6 +6,7 @@ SRC_URI:append = " \
     file://0003-j7200-skip-full-u-boot-board-late-detection.patch \
     file://0004-j7200-r5-select-required-elf-library.patch \
     file://0005-j7200-use-minimal-a72-environment.patch \
+    file://0006-j7200-print-final-metric-with-silent-console.patch \
     file://j7200-a72-minimal.config;subdir=git/configs \
     file://j7200-r5-minimal.config;subdir=git/configs \
 "

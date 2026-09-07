@@ -12,19 +12,20 @@ Leave the shared J721E and R5 environments unchanged.
 
 Signed-off-by: G Spark <gspark@example.com>
 ---
- board/ti/j721e/j721e.env | 8 ++++++++
- 1 file changed, 8 insertions(+)
+ board/ti/j721e/j721e.env | 9 +++++++++
+ 1 file changed, 9 insertions(+)
 
 diff --git a/board/ti/j721e/j721e.env b/board/ti/j721e/j721e.env
 index 0dcfd32d18..0dfa073151 100644
 --- a/board/ti/j721e/j721e.env
 +++ b/board/ti/j721e/j721e.env
-@@ -1,3 +1,9 @@
+@@ -1,3 +1,10 @@
 +#if CONFIG_TARGET_J7200_A72_EVM
 +/*
 + * The SD-only boot path is CONFIG_BOOTCOMMAND.  Keep the compiled default
 + * environment empty so full U-Boot does not import unused generic scripts.
 + */
++silent=1
 +#else
  #include <env/ti/ti_common.env>
  #include <env/ti/mmc.env>

@@ -1,0 +1,42 @@
+From 1b338fc0b47c8ea211fed75fa6ef6487e7ced5c8 Mon Sep 17 00:00:00 2001
+From: G Spark <gspark@example.com>
+Date: Mon, 7 Sep 2026 15:00:00 +0900
+Subject: [PATCH] j7200: print final metric with silent console
+
+The minimal boot environment enables U-Boot's silent flag.  Temporarily
+clear the runtime flag only around the final bootloader marker so UART
+diagnostics retain that marker.  The marker's existing FDT publication and
+its position immediately before Linux handoff remain unchanged.
+
+Signed-off-by: G Spark <gspark@example.com>
+---
+ arch/arm/lib/bootm.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/arch/arm/lib/bootm.c b/arch/arm/lib/bootm.c
+index 5755a732bb..fb0f1206be 100644
+--- a/arch/arm/lib/bootm.c
++++ b/arch/arm/lib/bootm.c
+@@ -89,6 +89,7 @@ static void announce_and_cleanup(struct bootm_headers *images, int fake)
+ 
+ #if defined(CONFIG_ARM64) && defined(CONFIG_SOC_K3_J721E)
+ 	u64 done_us = timer_get_boot_us();
++	bool was_silent = gd->flags & GD_FLG_SILENT;
+ 
+ 	if (readl(BOOT_METRIC_SCRATCH_ADDR) == BOOT_METRIC_SCRATCH_MAGIC) {
+ 		u64 seed_us = (u64)readl(BOOT_METRIC_SEED_LO_ADDR) |
+@@ -102,7 +103,12 @@ static void announce_and_cleanup(struct bootm_headers *images, int fake)
+ 		printf("BOOT_METRIC: R5 GTC seed unavailable\n");
+ 	}
+ 
++	/* Preserve the final diagnostic marker even when normal output is silent. */
++	gd->flags &= ~GD_FLG_SILENT;
+ 	printf("BOOT_METRIC: BOOTLOADER_DONE_US=%llu\n", done_us);
++	if (was_silent)
++		gd->flags |= GD_FLG_SILENT;
++
+ #elif defined(CONFIG_ARM64)
+ 	printf("BOOT_METRIC: BOOTLOADER_DONE_US=%lu\n", timer_get_boot_us());
+ #endif
+-- 
+2.43.0
