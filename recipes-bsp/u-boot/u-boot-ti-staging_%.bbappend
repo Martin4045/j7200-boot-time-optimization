@@ -8,9 +8,6 @@ SRC_URI:append = " \
     file://0005-j7200-use-minimal-a72-environment.patch \
     file://0006-j7200-print-final-metric-with-silent-console.patch \
     file://0007-j7200-suppress-normal-silent-boot-messages.patch \
-    file://0008-j7200-a72-spl-trace-mmc-payload-load.patch \
-    file://0009-j7200-trace-spl-to-full-uboot-handoff.patch \
-    file://0010-j7200-trace-direct-sd-boot-command.patch \
     file://j7200-a72-minimal.config;subdir=git/configs \
     file://j7200-r5-minimal.config;subdir=git/configs \
 "
