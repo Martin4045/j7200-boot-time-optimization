@@ -1,0 +1,169 @@
+From 7d78cefe3b546e91d711f7f0f064c64079900009 Mon Sep 17 00:00:00 2001
+From: G Spark <gspark@example.com>
+Date: Mon, 7 Sep 2026 18:00:00 +0900
+Subject: [PATCH] j7200: trace SPL to full U-Boot handoff
+
+The A72 SPL successfully initializes MMC and loads u-boot.img, but the next
+observable late boot metric is absent. Add fixed-string and integer-only
+checkpoints around the common SPL handoff, and console-safe checkpoints in
+full U-Boot. Temporarily clear the full U-Boot silent flag only while emitting
+these diagnostics.
+
+Signed-off-by: G Spark <gspark@example.com>
+---
+ common/board_f.c | 16 ++++++++++++++++
+ common/board_r.c | 15 +++++++++++++++
+ common/main.c    |  7 +++++++
+ common/spl/spl.c | 29 +++++++++++++++++++++++++++++
+ 4 files changed, 67 insertions(+)
+
+diff --git a/common/board_f.c b/common/board_f.c
+index 49a424a34de..487441a8f1f 100644
+--- a/common/board_f.c
++++ b/common/board_f.c
+@@ -877,6 +877,19 @@ static int initf_upl(void)
+ 	return 0;
+ }
+ 
++#if !defined(CONFIG_XPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++static int j7200_diag_board_init_f(void)
++{
++	ulong flags = gd->flags;
++
++	gd->flags &= ~GD_FLG_SILENT;
++	printf("BOOT_DIAG: A72_UBOOT: earliest console-safe entry\n");
++	printf("BOOT_DIAG: A72_UBOOT: board_init_f active\n");
++	gd->flags = flags;
++	return 0;
++}
++#endif
++
+ static const init_fnc_t init_sequence_f[] = {
+ 	setup_mon_len,
+ #ifdef CONFIG_OF_CONTROL
+@@ -916,6 +929,9 @@ static const init_fnc_t init_sequence_f[] = {
+ 	init_baud_rate,		/* initialze baudrate settings */
+ 	serial_init,		/* serial communications setup */
+ 	console_init_f,		/* stage 1 init of console */
++#if !defined(CONFIG_XPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++	j7200_diag_board_init_f,
++#endif
+ 	display_options,	/* say that we are here */
+ 	display_text_info,	/* show debugging info if required */
+ 	checkcpu,
+diff --git a/common/board_r.c b/common/board_r.c
+index 88dc756b2a5..04d273ab49f 100644
+--- a/common/board_r.c
++++ b/common/board_r.c
+@@ -593,6 +593,18 @@ static int run_main_loop(void)
+  *
+  * TODO: perhaps reset the watchdog in the initcall function after each call?
+  */
++#if !defined(CONFIG_XPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++static int j7200_diag_board_init_r(void)
++{
++	ulong flags = gd->flags;
++
++	gd->flags &= ~GD_FLG_SILENT;
++	printf("BOOT_DIAG: A72_UBOOT: board_init_r console ready\n");
++	gd->flags = flags;
++	return 0;
++}
++#endif
++
+ static init_fnc_t init_sequence_r[] = {
+ 	initr_trace,
+ 	initr_reloc,
+@@ -726,6 +738,9 @@ static init_fnc_t init_sequence_r[] = {
+ 	api_init,
+ #endif
+ 	console_init_r,		/* fully init console as a device */
++#if !defined(CONFIG_XPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++	j7200_diag_board_init_r,
++#endif
+ #ifdef CONFIG_DISPLAY_BOARDINFO_LATE
+ 	console_announce_r,
+ 	show_board_info,
+diff --git a/common/main.c b/common/main.c
+index b0b6e74f5d3..4364ef9262a 100644
+--- a/common/main.c
++++ b/common/main.c
+@@ -43,6 +43,13 @@ void main_loop(void)
+ {
+ 	const char *s;
+ 
++#if !defined(CONFIG_XPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++	ulong flags = gd->flags;
++
++	gd->flags &= ~GD_FLG_SILENT;
++	printf("BOOT_DIAG: A72_UBOOT: main_loop entry\n");
++	gd->flags = flags;
++#endif
+ 	bootstage_mark_name(BOOTSTAGE_ID_MAIN_LOOP, "main_loop");
+ 
+ 	if (IS_ENABLED(CONFIG_VERSION_VARIABLE))
+diff --git a/common/spl/spl.c b/common/spl/spl.c
+index 1ceb63daf31..fdea5e741ce 100644
+--- a/common/spl/spl.c
++++ b/common/spl/spl.c
+@@ -572,6 +572,10 @@ static int spl_load_image(struct spl_image_info *spl_image,
+ 	bootdev.boot_device_name = NULL;
+ 
+ 	ret = loader->load_image(spl_image, &bootdev);
++#if defined(CONFIG_SPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++	printf("BOOT_DIAG: A72_SPL: load_image callback returned\n");
++	printf("BOOT_DIAG: A72_SPL: load_image callback ret=%d\n", ret);
++#endif
+ #ifdef CONFIG_SPL_LEGACY_IMAGE_CRC_CHECK
+ 	if (!ret && spl_image->dcrc_length) {
+ 		/* check data crc */
+@@ -633,6 +637,9 @@ static int boot_from_devices(struct spl_image_info *spl_image,
+ 			}
+ 			if (loader &&
+ 				!spl_load_image(spl_image, loader)) {
++#if defined(CONFIG_SPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++				printf("BOOT_DIAG: A72_SPL: boot_from_devices received success\n");
++#endif
+ 				spl_image->boot_device = bootdev;
+ 				return 0;
+ 			}
+@@ -755,7 +762,22 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
+ 		hang();
+ 	}
+ 
++#if defined(CONFIG_SPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++	printf("BOOT_DIAG: A72_SPL: boot_from_devices returned success\n");
++	if (spl_image.entry_point)
++		printf("BOOT_DIAG: A72_SPL: payload entry point valid\n");
++	else
++		printf("BOOT_DIAG: A72_SPL: payload entry point INVALID\n");
++	if (spl_image.load_addr)
++		printf("BOOT_DIAG: A72_SPL: payload load address valid\n");
++	else
++		printf("BOOT_DIAG: A72_SPL: payload load address INVALID\n");
++	printf("BOOT_DIAG: A72_SPL: before payload fixups\n");
++#endif
+ 	spl_perform_fixups(&spl_image);
++#if defined(CONFIG_SPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++	printf("BOOT_DIAG: A72_SPL: after payload fixups\n");
++#endif
+ 
+ 	os = spl_image.os;
+ 	if (os == IH_OS_U_BOOT) {
+@@ -823,7 +845,14 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
+ 			       ret);
+ 	}
+ 
++#if defined(CONFIG_SPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++	printf("BOOT_DIAG: A72_SPL: before platform prepare\n");
++#endif
+ 	spl_board_prepare_for_boot();
++#if defined(CONFIG_SPL_BUILD) && defined(CONFIG_TARGET_J7200_A72_EVM)
++	printf("BOOT_DIAG: A72_SPL: after platform prepare\n");
++	printf("BOOT_DIAG: A72_SPL: before payload jump\n");
++#endif
+ 	jump_to_image(&spl_image);
+ }
+ 
+-- 
+2.43.0
