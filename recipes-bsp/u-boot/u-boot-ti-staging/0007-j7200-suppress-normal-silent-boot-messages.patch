@@ -1,0 +1,78 @@
+From 6c85f8e97563089f4ded6a2ba1d7ddce880214cb Mon Sep 17 00:00:00 2001
+From: Boot Time Experiment <boot-time@example.com>
+Date: Mon, 7 Sep 2026 14:00:00 +0900
+Subject: [PATCH] J7200: suppress normal silent-boot messages
+
+CONFIG_SPL_SILENT_CONSOLE suppresses standard SPL output, but a few K3
+platform informational messages use direct printf() calls.  Honor the stage's
+silent-console setting for SYSFW version reporting, the GP-device
+authentication skip notice, and the R5-to-ATF progress notice.  Error paths
+remain visible, and the separately instrumented BOOT_METRIC prints are not
+touched.
+
+Signed-off-by: Boot Time Experiment <boot-time@example.com>
+---
+ arch/arm/mach-k3/common.c           | 3 +++
+ arch/arm/mach-k3/r5/common.c        | 3 ++-
+ arch/arm/mach-k3/security.c         | 3 ++-
+ arch/arm/mach-k3/j721e/j721e_init.c | 3 ++-
+ 4 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm/mach-k3/common.c b/arch/arm/mach-k3/common.c
+index 1ad8b78187..d3a7f72c12 100644
+--- a/arch/arm/mach-k3/common.c
++++ b/arch/arm/mach-k3/common.c
+@@ -59,6 +59,9 @@ struct ti_sci_handle *get_ti_sci_handle(void)
+ 
+ void k3_sysfw_print_ver(void)
+ {
++	if (CONFIG_IS_ENABLED(SILENT_CONSOLE))
++		return;
++
+ 	struct ti_sci_handle *ti_sci = get_ti_sci_handle();
+ 	char fw_desc[sizeof(ti_sci->version.firmware_description) + 1];
+ 
+diff --git a/arch/arm/mach-k3/r5/common.c b/arch/arm/mach-k3/r5/common.c
+index b859e395f4..e7baf544de 100644
+--- a/arch/arm/mach-k3/r5/common.c
++++ b/arch/arm/mach-k3/r5/common.c
+@@ -339,7 +339,8 @@ start_arm64:
+ 
+ start_arm64:
+ 	/* Add an extra newline to differentiate the ATF logs from SPL */
+-	printf("Starting ATF on ARM64 core...\n\n");
++	if (!CONFIG_IS_ENABLED(SILENT_CONSOLE))
++		printf("Starting ATF on ARM64 core...\n\n");
+ 
+ 	ret = rproc_start(1);
+ 	if (ret)
+diff --git a/arch/arm/mach-k3/security.c b/arch/arm/mach-k3/security.c
+index 262a2cc6a9..6f4a48dc46 100644
+--- a/arch/arm/mach-k3/security.c
++++ b/arch/arm/mach-k3/security.c
+@@ -60,7 +60,8 @@ void ti_secure_image_check_binary(void **p_image, size_t *p_size)
+ 				return;
+ 			}
+ 
+-			printf("Skipping authentication on GP device\n");
++			if (!CONFIG_IS_ENABLED(SILENT_CONSOLE))
++				printf("Skipping authentication on GP device\n");
+ 			*p_image += cert_length;
+ 			*p_size -= cert_length;
+ 		}
+diff --git a/arch/arm/mach-k3/j721e/j721e_init.c b/arch/arm/mach-k3/j721e/j721e_init.c
+index 4b03ba82ae..59e2bf63bc 100644
+--- a/arch/arm/mach-k3/j721e/j721e_init.c
++++ b/arch/arm/mach-k3/j721e/j721e_init.c
+@@ -532,7 +532,8 @@ void board_init_f(ulong dummy)
+ 		image_addr = mem_addr_lpm.optee_cert_addr;
+ 		ti_secure_image_replay_cert(&image_addr, &size_int);
+ 		loadaddr = resume_to_dm_f();
+-		printf("Starting ATF on ARM64 core...\n\n");
++		if (!CONFIG_IS_ENABLED(SILENT_CONSOLE))
++			printf("Starting ATF on ARM64 core...\n\n");
+ 		resume_rproc_f();
+ 
+ 		image_entry_noargs_t image_entry = (image_entry_noargs_t)loadaddr;
+-- 
+2.43.0

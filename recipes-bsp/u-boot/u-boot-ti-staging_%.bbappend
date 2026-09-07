@@ -7,6 +7,7 @@ SRC_URI:append = " \
     file://0004-j7200-r5-select-required-elf-library.patch \
     file://0005-j7200-use-minimal-a72-environment.patch \
     file://0006-j7200-print-final-metric-with-silent-console.patch \
+    file://0007-j7200-suppress-normal-silent-boot-messages.patch \
     file://j7200-a72-minimal.config;subdir=git/configs \
     file://j7200-r5-minimal.config;subdir=git/configs \
 "
