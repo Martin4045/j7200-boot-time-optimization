@@ -107,7 +107,7 @@ diff --git a/cmd/booti.c b/cmd/booti.c
 index 5c2d5cd3a2..3333333333 100644
 --- a/cmd/booti.c
 +++ b/cmd/booti.c
-@@ -5,8 +5,10 @@
+@@ -6,7 +6,9 @@
  
  #include <bootm.h>
 +#include <bootstage.h>
@@ -117,7 +117,7 @@ index 5c2d5cd3a2..3333333333 100644
  #include <irq_func.h>
  #include <lmb.h>
  #include <log.h>
-@@ -32,7 +34,10 @@ static int booti_start(struct bootm_info *bmi)
+@@ -33,6 +35,9 @@ static int booti_start(struct bootm_info *bmi)
  	unsigned long decomp_len;
  	int ctype;
 +	u64 decomp_start_us;
@@ -127,14 +127,14 @@ index 5c2d5cd3a2..3333333333 100644
  	ret = bootm_run_states(bmi, BOOTM_STATE_START);
  
  	/* Setup Linux kernel Image entry point */
-@@ -62,6 +67,7 @@ static int booti_start(struct bootm_info *bmi)
+@@ -63,5 +68,6 @@ static int booti_start(struct bootm_info *bmi)
  			ctype, comp_len, (ulong)dest);
  		decomp_len = comp_len * 10;
 +		decomp_start_us = timer_get_boot_us();
  		ret = image_decomp(ctype, 0, ld, IH_TYPE_KERNEL,
  				 (void *)dest, (void *)ld, comp_len,
  				 decomp_len, &dest_end);
-@@ -69,6 +75,8 @@ static int booti_start(struct bootm_info *bmi)
+@@ -71,5 +77,7 @@ static int booti_start(struct bootm_info *bmi)
  		/* dest_end contains the uncompressed Image size */
  		memmove((void *) ld, (void *)dest, dest_end);
 +		boot_metric_record_kernel_decomp(decomp_start_us,
