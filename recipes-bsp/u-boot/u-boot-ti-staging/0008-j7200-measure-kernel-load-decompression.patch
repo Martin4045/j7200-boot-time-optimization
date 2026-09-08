@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000008 Mon Sep 17 00:00:00 2001
+From: Boot Time Experiment <boot-time@example.com>
+Date: Tue, 8 Sep 2026 12:00:00 +0900
+Subject: [PATCH] j7200: measure kernel load and decompression intervals
+
+Record the filesystem read interval, booti entry, and compressed-Image
+decompression/copy interval using the existing continuous boot timer.  Report
+the scalar values next to the existing final bootloader metric while the
+silent console is temporarily open.  Capturing BOOTLOADER_DONE_US remains in
+its existing position and retains its existing meaning.
+
+The hooks compile to no-ops outside full A72 U-Boot.  No SPL, kernel,
+device-tree, bootargs or userspace behavior is changed.
+
+Upstream-Status: Inappropriate [measurement instrumentation]
+---
+ arch/arm/lib/bootm.c          | 39 +++++++++++++++++++++++++++++++++++++++
+ cmd/booti.c                   |  8 ++++++++
+ fs/fs.c                       |  9 +++++++++
+ include/j7200_boot_metrics.h  | 34 ++++++++++++++++++++++++++++++++++
+ 4 files changed, 90 insertions(+)
+ create mode 100644 include/j7200_boot_metrics.h
+
+diff --git a/include/j7200_boot_metrics.h b/include/j7200_boot_metrics.h
+new file mode 100644
+index 0000000000..1111111111
+--- /dev/null
++++ b/include/j7200_boot_metrics.h
+@@ -0,0 +1,32 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++#ifndef __J7200_BOOT_METRICS_H
++#define __J7200_BOOT_METRICS_H
++
++#include <config.h>
++#include <linux/types.h>
++
++#if defined(CONFIG_ARM64) && defined(CONFIG_SOC_K3_J721E) && \
++	!defined(CONFIG_XPL_BUILD)
++void boot_metric_record_kernel_load(u64 start_us, u64 done_us);
++void boot_metric_record_booti_start(u64 start_us);
++void boot_metric_record_kernel_decomp(u64 start_us, u64 done_us);
++void boot_metric_report_kernel_intervals(void);
++#else
++static inline void boot_metric_record_kernel_load(u64 start_us, u64 done_us)
++{
++}
++
++static inline void boot_metric_record_booti_start(u64 start_us)
++{
++}
++
++static inline void boot_metric_record_kernel_decomp(u64 start_us, u64 done_us)
++{
++}
++
++static inline void boot_metric_report_kernel_intervals(void)
++{
++}
++#endif
++
++#endif
+diff --git a/fs/fs.c b/fs/fs.c
+index 8324b22a16..2222222222 100644
+--- a/fs/fs.c
++++ b/fs/fs.c
+@@ -8,6 +8,7 @@
+ #include <command.h>
+ #include <config.h>
+ #include <display_options.h>
++#include <bootstage.h>
+ #include <errno.h>
+ #include <env.h>
+ #include <lmb.h>
+@@ -17,6 +18,7 @@
+ #include <malloc.h>
+ #include <mapmem.h>
+ #include <part.h>
++#include <j7200_boot_metrics.h>
+ #include <ext4fs.h>
+ #include <fat.h>
+ #include <fs.h>
+@@ -745,6 +747,8 @@ int do_load(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[],
+ 	int ret;
+ 	unsigned long time;
+ 	char *ep;
++	bool metric_kernel;
++	u64 metric_start_us = 0;
+ 
+ 	if (argc < 2)
+ 		return CMD_RET_USAGE;
+@@ -785,8 +789,14 @@ int do_load(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[],
+ 	else
+ 		pos = 0;
+ 
++	metric_kernel = !strncmp(filename, "/boot/Image",
++				 sizeof("/boot/Image") - 1);
++	if (metric_kernel)
++		metric_start_us = timer_get_boot_us();
+ 	time = get_timer(0);
+ 	ret = _fs_read(filename, addr, pos, bytes, 1, &len_read);
++	if (metric_kernel)
++		boot_metric_record_kernel_load(metric_start_us, timer_get_boot_us());
+ 	time = get_timer(time);
+ 	if (ret < 0) {
+ 		log_err("Failed to load '%s'\n", filename);
+diff --git a/cmd/booti.c b/cmd/booti.c
+index 5c2d5cd3a2..3333333333 100644
+--- a/cmd/booti.c
++++ b/cmd/booti.c
+@@ -6,7 +6,9 @@
+ 
+ #include <bootm.h>
++#include <bootstage.h>
+ #include <command.h>
+ #include <image.h>
++#include <j7200_boot_metrics.h>
+ #include <irq_func.h>
+ #include <lmb.h>
+ #include <log.h>
+@@ -30,6 +32,9 @@ static int booti_start(struct bootm_info *bmi)
+ 	unsigned long decomp_len;
+ 	int ctype;
++	u64 decomp_start_us;
+ 
++	boot_metric_record_booti_start(timer_get_boot_us());
++	boot_metric_record_kernel_decomp(0, 0);
+ 	ret = bootm_run_states(bmi, BOOTM_STATE_START);
+ 
+ 	/* Setup Linux kernel Image entry point */
+@@ -62,5 +67,6 @@ static int booti_start(struct bootm_info *bmi)
+ 			ctype, comp_len, (ulong)dest);
+ 		decomp_len = comp_len * 10;
++		decomp_start_us = timer_get_boot_us();
+ 		ret = image_decomp(ctype, 0, ld, IH_TYPE_KERNEL,
+ 				 (void *)dest, (void *)ld, comp_len,
+ 				 decomp_len, &dest_end);
+@@ -70,5 +76,7 @@ static int booti_start(struct bootm_info *bmi)
+ 		/* dest_end contains the uncompressed Image size */
+ 		memmove((void *) ld, (void *)dest, dest_end);
++		boot_metric_record_kernel_decomp(decomp_start_us,
++						 timer_get_boot_us());
+ 	}
+ 	unmap_sysmem((void *)ld);
+ 
+diff --git a/arch/arm/lib/bootm.c b/arch/arm/lib/bootm.c
+index fb0f1206be..4444444444 100644
+--- a/arch/arm/lib/bootm.c
++++ b/arch/arm/lib/bootm.c
+@@ -20,4 +20,5 @@
+ #include <dm/root.h>
+ #include <env.h>
+ #include <image.h>
++#include <j7200_boot_metrics.h>
+ #include <u-boot/zlib.h>
+@@ -49,6 +50,43 @@ DECLARE_GLOBAL_DATA_PTR;
+ #define BOOT_METRIC_SEED_LO_ADDR		(BOOT_METRIC_SCRATCH_ADDR + 8)
+ #define BOOT_METRIC_SEED_HI_ADDR		(BOOT_METRIC_SCRATCH_ADDR + 12)
+ 
++static u64 kernel_load_start_us;
++static u64 kernel_load_done_us;
++static u64 kernel_booti_start_us;
++static u64 kernel_decomp_start_us;
++static u64 kernel_decomp_done_us;
++
++void boot_metric_record_kernel_load(u64 start_us, u64 done_us)
++{
++	kernel_load_start_us = start_us;
++	kernel_load_done_us = done_us;
++}
++
++void boot_metric_record_booti_start(u64 start_us)
++{
++	kernel_booti_start_us = start_us;
++}
++
++void boot_metric_record_kernel_decomp(u64 start_us, u64 done_us)
++{
++	kernel_decomp_start_us = start_us;
++	kernel_decomp_done_us = done_us;
++}
++
++void boot_metric_report_kernel_intervals(void)
++{
++	printf("BOOT_METRIC: KERNEL_LOAD_START_US=%llu\n",
++	       kernel_load_start_us);
++	printf("BOOT_METRIC: KERNEL_LOAD_DONE_US=%llu\n",
++	       kernel_load_done_us);
++	printf("BOOT_METRIC: KERNEL_BOOTI_START_US=%llu\n",
++	       kernel_booti_start_us);
++	printf("BOOT_METRIC: KERNEL_DECOMP_START_US=%llu\n",
++	       kernel_decomp_start_us);
++	printf("BOOT_METRIC: KERNEL_DECOMP_DONE_US=%llu\n",
++	       kernel_decomp_done_us);
++}
++
+ static void boot_metric_add_fdt(void *fdt, u64 seed_us, u64 done_us)
+ {
+ 	int chosen;
+@@ -105,6 +142,8 @@ static void announce_and_cleanup(struct bootm_headers *images, int fake)
+ 	/* Preserve the final diagnostic marker even when normal output is silent. */
+ 	gd->flags &= ~GD_FLG_SILENT;
+ 	printf("BOOT_METRIC: BOOTLOADER_DONE_US=%llu\n", done_us);
++	boot_metric_report_kernel_intervals();
++
+ 	if (was_silent)
+ 		gd->flags |= GD_FLG_SILENT;
+ 
+-- 
+2.43.0
