@@ -8,7 +8,7 @@ SRC_URI:append = " \
 
 # Generate deterministic storage forms from the exact deployed raw ARM64
 # Image. The kernel source, .config, DTBs and Image itself are unchanged.
-do_deploy[depends]:append:j7200 = " lz4-native:do_populate_sysroot gzip-native:do_populate_sysroot"
+do_deploy[depends] += "lz4-native:do_populate_sysroot gzip-native:do_populate_sysroot"
 
 do_deploy:append:j7200() {
     lz4 -q -f -9 \
