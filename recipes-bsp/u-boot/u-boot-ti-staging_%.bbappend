@@ -9,6 +9,7 @@ SRC_URI:append = " \
     file://0006-j7200-print-final-metric-with-silent-console.patch \
     file://0007-j7200-suppress-normal-silent-boot-messages.patch \
     file://0008-j7200-measure-kernel-load-decompression.patch \
+    file://0011-j7200-profile-spl-stages.patch \
     file://j7200-a72-minimal.config;subdir=git/configs \
     file://j7200-r5-minimal.config;subdir=git/configs \
 "

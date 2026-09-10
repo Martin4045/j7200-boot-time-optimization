@@ -1,0 +1,213 @@
+Subject: [PATCH] j7200: buffer SPL phase timestamps without additional UART output
+
+Upstream-Status: Inappropriate [paired boot-time experiment]
+
+diff --git a/arch/arm/lib/bootm.c b/arch/arm/lib/bootm.c
+index 2d6f2c78e13..7ce22135eb2 100644
+--- a/arch/arm/lib/bootm.c
++++ b/arch/arm/lib/bootm.c
+@@ -21,6 +21,7 @@
+ #include <dm/root.h>
+ #include <env.h>
+ #include <image.h>
++#include <j7200_spl_profile.h>
+ #include <j7200_boot_metrics.h>
+ #include <u-boot/zlib.h>
+ #include <asm/byteorder.h>
+@@ -96,6 +97,19 @@ static void boot_metric_add_fdt(void *fdt, u64 seed_us, u64 done_us)
+ 	    fdt_setprop_u64(fdt, chosen, "ti,r5-gtc-seed-us", seed_us) ||
+ 	    fdt_setprop_u64(fdt, chosen, "ti,bootloader-done-us", done_us))
+ 		printf("BOOT_METRIC: failed to publish markers in FDT\n");
++
++#if defined(CONFIG_TARGET_J7200_A72_EVM)
++	if (chosen >= 0 && readl(JP_BASE) == JP_MAGIC) {
++		fdt32_t cells[JP_COUNT + 2];
++		int i;
++
++		for (i = 0; i < JP_COUNT + 2; i++)
++			cells[i] = cpu_to_fdt32(readl(JP_BASE + 4 * i));
++		if (fdt_setprop(fdt, chosen, "ti,spl-profile-v1", cells,
++				sizeof(cells)))
++			printf("BOOT_METRIC: failed to publish SPL profile\n");
++	}
++#endif
+ }
+ #endif
+ 
+diff --git a/arch/arm/mach-k3/j721e/j721e_init.c b/arch/arm/mach-k3/j721e/j721e_init.c
+index f1d814b8a24..9d808808b27 100644
+--- a/arch/arm/mach-k3/j721e/j721e_init.c
++++ b/arch/arm/mach-k3/j721e/j721e_init.c
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include <init.h>
++#include <j7200_spl_profile.h>
+ #include <spl.h>
+ #include <asm/io.h>
+ #include <asm/armv7_mpu.h>
+@@ -390,6 +391,9 @@ void board_init_f(ulong dummy)
+ #endif
+ 
+ 	/* init resume flag */
++	if (IS_ENABLED(CONFIG_ARM64))
++		j7200_profile_mark(JP_A72_ENTRY);
++
+ 	gd_set_k3_resuming(-1);
+ 
+ 	/*
+@@ -546,6 +550,12 @@ void board_init_f(ulong dummy)
+ 		setup_navss_nb();
+ 
+ 	setup_qos();
++	if (IS_ENABLED(CONFIG_CPU_V7R)) {
++		j7200_profile_reset();
++		j7200_profile_mark(JP_R5_INIT_DONE);
++	} else {
++		j7200_profile_mark(JP_A72_INIT_DONE);
++	}
+ }
+ 
+ u32 spl_mmc_boot_mode(struct mmc *mmc, const u32 boot_device)
+diff --git a/arch/arm/mach-k3/r5/common.c b/arch/arm/mach-k3/r5/common.c
+index 23a61c98e99..fabc929bb3f 100644
+--- a/arch/arm/mach-k3/r5/common.c
++++ b/arch/arm/mach-k3/r5/common.c
+@@ -10,6 +10,7 @@
+ #include <asm/hardware.h>
+ #include <asm/io.h>
+ #include <image.h>
++#include <j7200_spl_profile.h>
+ #include <fs_loader.h>
+ #include <linux/soc/ti/ti_sci_protocol.h>
+ #include <spl.h>
+@@ -342,6 +343,7 @@ start_arm64:
+ 	if (!CONFIG_IS_ENABLED(SILENT_CONSOLE))
+ 		printf("Starting ATF on ARM64 core...\n\n");
+ 
++	j7200_profile_mark(JP_R5_ARM64_REQUEST);
+ 	ret = rproc_start(1);
+ 	if (ret)
+ 		panic("%s: ATF failed to start on rproc (%d)\n",
+diff --git a/common/board_f.c b/common/board_f.c
+index 49a424a34de..82ed5dcd3bd 100644
+--- a/common/board_f.c
++++ b/common/board_f.c
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <config.h>
++#include <j7200_spl_profile.h>
+ #include <bloblist.h>
+ #include <bootstage.h>
+ #include <clock_legacy.h>
+@@ -1026,6 +1027,9 @@ void board_init_f(ulong boot_flags)
+ {
+ 	struct board_f boardf;
+ 
++	if (IS_ENABLED(CONFIG_ARM64) && !IS_ENABLED(CONFIG_XPL_BUILD))
++		j7200_profile_mark(JP_UBOOT_ENTRY);
++
+ 	gd->flags = boot_flags;
+ 	gd->flags &= ~GD_FLG_HAVE_CONSOLE;
+ 	gd->boardf = &boardf;
+diff --git a/common/spl/spl.c b/common/spl/spl.c
+index 1ceb63daf31..00ee3fd6fbd 100644
+--- a/common/spl/spl.c
++++ b/common/spl/spl.c
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include <config.h>
++#include <j7200_spl_profile.h>
+ #include <bloblist.h>
+ #include <binman_sym.h>
+ #include <bootstage.h>
+@@ -571,7 +572,11 @@ static int spl_load_image(struct spl_image_info *spl_image,
+ 	bootdev.boot_device = loader->boot_device;
+ 	bootdev.boot_device_name = NULL;
+ 
++	j7200_profile_mark(IS_ENABLED(CONFIG_ARM64) ?
++			   JP_A72_LOAD_START : JP_R5_LOAD_START);
+ 	ret = loader->load_image(spl_image, &bootdev);
++	j7200_profile_mark(IS_ENABLED(CONFIG_ARM64) ?
++			   JP_A72_LOAD_DONE : JP_R5_LOAD_DONE);
+ #ifdef CONFIG_SPL_LEGACY_IMAGE_CRC_CHECK
+ 	if (!ret && spl_image->dcrc_length) {
+ 		/* check data crc */
+@@ -824,6 +829,8 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
+ 	}
+ 
+ 	spl_board_prepare_for_boot();
++	if (IS_ENABLED(CONFIG_ARM64))
++		j7200_profile_mark(JP_A72_HANDOFF);
+ 	jump_to_image(&spl_image);
+ }
+ 
+diff --git a/include/j7200_spl_profile.h b/include/j7200_spl_profile.h
+new file mode 100644
+index 00000000000..5a4d2e4e14f
+--- /dev/null
++++ b/include/j7200_spl_profile.h
+@@ -0,0 +1,61 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++#ifndef __J7200_SPL_PROFILE_H
++#define __J7200_SPL_PROFILE_H
++
++#include <config.h>
++
++enum j7200_profile_slot {
++	JP_R5_INIT_DONE,
++	JP_R5_LOAD_START,
++	JP_R5_LOAD_DONE,
++	JP_R5_ARM64_REQUEST,
++	JP_A72_ENTRY,
++	JP_A72_INIT_DONE,
++	JP_A72_LOAD_START,
++	JP_A72_LOAD_DONE,
++	JP_A72_HANDOFF,
++	JP_UBOOT_ENTRY,
++	JP_COUNT
++};
++
++#if defined(CONFIG_TARGET_J7200_R5_EVM) || defined(CONFIG_TARGET_J7200_A72_EVM)
++#include <asm/io.h>
++#include <bootstage.h>
++#include <time.h>
++
++/* EEPROM occupies the scratchpad prefix; legacy metrics use the last 16B.
++ * This versioned record uses 48B at offset 384 of the 512B scratchpad.
++ * 32-bit microseconds cover cold-boot experiments shorter than 71 minutes.
++ */
++#define JP_BASE (CONFIG_SYS_K3_MCU_SCRATCHPAD_BASE + \
++		 CONFIG_SYS_K3_MCU_SCRATCHPAD_SIZE - 128)
++#define JP_MAGIC 0x53504c31
++
++static inline void j7200_profile_reset(void)
++{
++	int i;
++
++	for (i = 0; i < JP_COUNT + 2; i++)
++		writel(0, JP_BASE + 4 * i);
++	writel(JP_MAGIC, JP_BASE);
++}
++
++static inline void j7200_profile_mark(enum j7200_profile_slot slot)
++{
++	u32 us;
++
++#ifdef CONFIG_ARM64
++	us = timer_get_boot_us();
++#else
++	us = timer_get_us();
++#endif
++	writel(us, JP_BASE + 8 + 4 * slot);
++	writel(readl(JP_BASE + 4) | (1U << slot), JP_BASE + 4);
++	/* Publish before requesting execution on another core. */
++	mb();
++}
++#else
++static inline void j7200_profile_reset(void) {}
++static inline void j7200_profile_mark(enum j7200_profile_slot slot) {}
++#endif
++#endif
