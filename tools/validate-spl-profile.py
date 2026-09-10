@@ -22,7 +22,8 @@ for cpu in ("a72", "r5"):
     assert (s7 / f"{cpu}.config").read_bytes() == (old / f"{cpu}.config").read_bytes()
     a, b = config(s7 / f"{cpu}.config"), config(semi / f"{cpu}.config")
     changed = {k: (a.get(k), b.get(k)) for k in a.keys() | b.keys() if a.get(k) != b.get(k)}
-    assert changed == ({"CONFIG_TEXT_BASE": ("0x80800000", "0x80080000")} if cpu == "a72" else {})
+    assert changed == ({k: ("0x80800000", "0x80080000") for k in
+                        ("CONFIG_TEXT_BASE", "CONFIG_SYS_UBOOT_START")} if cpu == "a72" else {})
     print(f"PASS {cpu}: S7 .config byte-identical to original; paired differences: {changed}")
 
 for bundle in (s7, semi):
@@ -32,8 +33,15 @@ for bundle in (s7, semi):
     cmd = c["CONFIG_BOOTCOMMAND"].strip('"')
     assert cmd == config(old / "a72.config")["CONFIG_BOOTCOMMAND"].strip('"')
     assert " /boot/Image &&" in cmd and "booti 0x82000000 - 0x88000000" in cmd
+    assert cmd.encode() in (bundle / "u-boot.img").read_bytes()
+    assert '#define CONFIG_BOOTCOMMAND ' + c["CONFIG_BOOTCOMMAND"] in (bundle / "static/a72-autoconf.h").read_text()
     for bad in (b"Image.gz", b"kernel_comp_addr_r", b"kernel_comp_size"):
-        assert bad not in (bundle / "u-boot.img").read_bytes(), (bundle, bad)
+        assert bad.decode() not in cmd
+        # Generic booti code can retain variable-name strings even in the
+        # original raw baseline. They are not assignments in the environment.
+        assert (bad in (bundle / "u-boot.img").read_bytes()) == (bad in (old / "u-boot.img").read_bytes())
+    for assignment in (b"kernel_comp_addr_r=", b"kernel_comp_size="):
+        assert assignment not in (bundle / "u-boot.img").read_bytes()
     assert c.get("CONFIG_GZIP") != "y" and c.get("CONFIG_SPL_OS_BOOT") != "y"
     for marker in (b"BOOTLOADER_DONE_US", b"KERNEL_LOAD_START_US", b"KERNEL_LOAD_DONE_US",
                    b"KERNEL_BOOTI_START_US", b"KERNEL_DECOMP_START_US", b"KERNEL_DECOMP_DONE_US",

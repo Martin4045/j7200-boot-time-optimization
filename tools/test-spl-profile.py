@@ -21,7 +21,7 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(profile.intervals(m)["ARM64_REQUEST_TO_NEXT_C_ENTRY_US"], 600)
 
     def test_bad_header(self):
-        for data in (b"", bytes(48)):
+        for data in (b"", bytes(48), struct.pack(">12I", 0x53504C31, 1, *([0] * 10))):
             with self.assertRaises(ValueError):
                 profile.decode(data)
 

@@ -18,7 +18,7 @@ def decode(data):
     if len(data) != 48:
         raise ValueError(f"expected 48 profile bytes, got {len(data)}")
     magic, valid, *values = struct.unpack(">12I", data)
-    if magic != 0x53504C31 or valid & ~0x3FF:
+    if magic != 0x53504C31 or valid not in (0x3FF, 0x20F):
         raise ValueError("invalid SPL profile v1 header")
     return {name: value if valid & (1 << i) else None
             for i, (name, value) in enumerate(zip(NAMES, values))}
