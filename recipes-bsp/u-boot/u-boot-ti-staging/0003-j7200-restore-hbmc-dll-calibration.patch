@@ -1,0 +1,192 @@
+diff --git a/arch/arm/dts/k3-j7200-common-proc-board-u-boot.dtsi b/arch/arm/dts/k3-j7200-common-proc-board-u-boot.dtsi
+index 045ef17..1dca980 100644
+--- a/arch/arm/dts/k3-j7200-common-proc-board-u-boot.dtsi
++++ b/arch/arm/dts/k3-j7200-common-proc-board-u-boot.dtsi
+@@ -204,3 +204,25 @@
+ &serdes0 {
+ 	bootph-all;
+ };
++
++/*
++ * The 2025 upstream DT omits the HBMC subsystem configuration block at
++ * 0x47030000. The DLL/FIFO calibration status registers live there.
++ * Keep this override A72-only because the A72 SPL probes the HBMC driver.
++ */
++#ifdef CONFIG_ARM64
++&fss {
++	ranges = <0x0 0x47000000 0x0 0x47000000 0x0 0x100>,
++		 <0x0 0x47030000 0x0 0x47030000 0x0 0xc>,
++		 <0x0 0x47034000 0x0 0x47040000 0x0 0x100>,
++		 <0x0 0x47040000 0x0 0x47040000 0x0 0x100>,
++		 <0x5 0x00000000 0x5 0x00000000 0x1 0x0000000>;
++};
++
++&hbmc {
++	reg = <0x0 0x47030000 0x0 0xc>,
++	      <0x0 0x47034000 0x0 0x100>,
++	      <0x5 0x00000000 0x1 0x0000000>;
++	reg-names = "calibration", "control", "memory";
++};
++#endif
+diff --git a/drivers/mtd/hbmc-am654.c b/drivers/mtd/hbmc-am654.c
+index 98988a8..f61b9f6 100644
+--- a/drivers/mtd/hbmc-am654.c
++++ b/drivers/mtd/hbmc-am654.c
+@@ -7,31 +7,38 @@
+ #include <dm.h>
+ #include <mux.h>
+ #include <regmap.h>
++#include <linux/string.h>
+ #include <dm/device_compat.h>
+ 
+ #define FSS_SYSC_REG	0x4
+ 
+-#define HYPERBUS_CALIB_COUNT 25
++#define HYPERBUS_CALIB_COUNT		64
++#define HYPERBUS_CALIB_MIN_TRIES	48
++#define HYPERBUS_CALIB_SUCCESS_COUNT	4
++#define HYPERBUS_CALIB_SIZE		64
++#define HYPERBUS_CALIB_MIN_SAMPLES	(HYPERBUS_CALIB_COUNT - \
++					 HYPERBUS_CALIB_MIN_TRIES + 1)
++
++#define HYPERBUS_CFG_DLL_STAT_REG	4
++#define HYPERBUS_CFG_MDLL_LOCK		BIT(0)
++#define HYPERBUS_CFG_SDLL_LOCK		BIT(1)
++#define HYPERBUS_CFG_RAM_STAT_REG	8
++#define HYPERBUS_CFG_RAM_FIFO_INIT_DONE	BIT(0)
+ 
+ struct am654_hbmc_priv {
+ 	void __iomem *mmiobase;
++	void __iomem *cfgregbase;
+ 	bool calibrated;
+ };
+ 
+-/* Calibrate by looking for "QRY" string within the CFI space */
+-static int am654_hyperbus_calibrate(struct udevice *dev)
++/* Confirm calibration by looking for "QRY" in the CFI query space. */
++static int am654_hyperbus_calibrate_check(struct udevice *dev)
+ {
+ 	struct am654_hbmc_priv *priv = dev_get_priv(dev);
+ 	int count = HYPERBUS_CALIB_COUNT;
+ 	int pass_count = 0;
+ 	u16 qry[3];
+ 
+-	if (priv->calibrated)
+-		return 0;
+-
+-	writew(0xF0, priv->mmiobase);
+-	writew(0x98, priv->mmiobase + 0xaa);
+-
+ 	while (count--) {
+ 		qry[0] = readw(priv->mmiobase + 0x20);
+ 		qry[1] = readw(priv->mmiobase + 0x22);
+@@ -41,13 +48,79 @@ static int am654_hyperbus_calibrate(struct udevice *dev)
+ 			pass_count++;
+ 		else
+ 			pass_count = 0;
+-		if (pass_count == 5)
+-			break;
++		if (pass_count > HYPERBUS_CALIB_SUCCESS_COUNT)
++			return 0;
++	}
++
++	return -EIO;
++}
++
++static int am654_hyperbus_calibrate(struct udevice *dev)
++{
++	struct am654_hbmc_priv *priv = dev_get_priv(dev);
++	char verifybuf[HYPERBUS_CALIB_SIZE];
++	char rdbuf[HYPERBUS_CALIB_SIZE];
++	unsigned int sample_count;
++	int pass_count = 0;
++	unsigned int reg;
++	int ret = -EIO;
++
++	if (priv->calibrated)
++		return 0;
++
++	if (!priv->cfgregbase || !priv->mmiobase)
++		return ret;
++
++	reg = readl(priv->cfgregbase + HYPERBUS_CFG_RAM_STAT_REG);
++	if (!(reg & HYPERBUS_CFG_RAM_FIFO_INIT_DONE)) {
++		dev_err(dev, "Hyperbus RAM FIFO init failed\n");
++		return ret;
+ 	}
++
++	/*
++	 * Keep restarting the stability and QRY checks until calibration
++	 * succeeds. A permanently unstable bus intentionally waits here.
++	 */
++	while (ret) {
++		writew(0xF0, priv->mmiobase);
++		writew(0x98, priv->mmiobase + 0xaa);
++
++		pass_count = 0;
++		sample_count = 0;
++		memcpy(verifybuf, priv->mmiobase, HYPERBUS_CALIB_SIZE);
++
++		/*
++		 * Require stable 64-byte data and locked MDLL/SDLL for five
++		 * samples, after at least 17 samples. There is no retry limit.
++		 */
++		for (;;) {
++			memcpy(rdbuf, priv->mmiobase, HYPERBUS_CALIB_SIZE);
++			if (!memcmp(rdbuf, verifybuf, HYPERBUS_CALIB_SIZE)) {
++				reg = readl(priv->cfgregbase +
++					    HYPERBUS_CFG_DLL_STAT_REG);
++				if ((reg & HYPERBUS_CFG_MDLL_LOCK) &&
++				    (reg & HYPERBUS_CFG_SDLL_LOCK))
++					pass_count++;
++				else
++					pass_count = 0;
++			} else {
++				pass_count = 0;
++			}
++
++			memcpy(verifybuf, rdbuf, HYPERBUS_CALIB_SIZE);
++			sample_count++;
++			if (pass_count > HYPERBUS_CALIB_SUCCESS_COUNT &&
++			    sample_count >= HYPERBUS_CALIB_MIN_SAMPLES)
++				break;
++		}
++
++		ret = am654_hyperbus_calibrate_check(dev);
++	}
++
+ 	writew(0xF0, priv->mmiobase);
+ 	writew(0xFF, priv->mmiobase);
+ 
+-	return pass_count == 5;
++	return ret;
+ }
+ 
+ static int am654_select_hbmc(struct udevice *dev)
+@@ -71,7 +144,13 @@ static int am654_hbmc_probe(struct udevice *dev)
+ 	struct am654_hbmc_priv *priv = dev_get_priv(dev);
+ 	int ret;
+ 
+-	priv->mmiobase = devfdt_remap_addr_index(dev, 1);
++	priv->cfgregbase = devfdt_remap_addr_index(dev, 0);
++	priv->mmiobase = devfdt_remap_addr_index(dev, 2);
++	if (!priv->cfgregbase || !priv->mmiobase) {
++		dev_err(dev, "Failed to map HBMC calibration resources\n");
++		return -EINVAL;
++	}
++
+ 	if (dev_read_bool(dev, "mux-controls")) {
+ 		ret = am654_select_hbmc(dev);
+ 		if (ret) {
+@@ -82,9 +161,9 @@ static int am654_hbmc_probe(struct udevice *dev)
+ 
+ 	if (!priv->calibrated) {
+ 		ret = am654_hyperbus_calibrate(dev);
+-		if (!ret) {
++		if (ret) {
+ 			dev_err(dev, "Calibration Failed\n");
+-			return -EIO;
++			return ret;
+ 		}
+ 	}
+ 	priv->calibrated = true;
