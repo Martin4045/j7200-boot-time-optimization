@@ -1,0 +1,487 @@
+From: Boot Time Experiment <boot-time@example.com>
+Subject: [PATCH 1/2] j7200: enable stabilized HyperFlash boot with load metrics
+
+Port the TI 2023 DLL stabilization sequence while retaining the 2025 mux
+framework. Keep R5 on the ROM-configured raw NOR path.
+Retain the final bootloader metric and report NOR image-read durations.
+Report FIFO/DLL/QRY stabilization duration separately in each probing stage;
+briefly lift silent output only for completed duration measurements.
+
+Support NOR SYSFW loading without SPI and reserve raw DTB/kernel slots.
+Keep the SD root filesystem and existing boot-time instrumentation.
+
+Upstream-Status: Inappropriate [fixed J7200 HyperFlash boot]
+
+diff --git a/drivers/mtd/hbmc-am654.c b/drivers/mtd/hbmc-am654.c
+--- a/drivers/mtd/hbmc-am654.c
++++ b/drivers/mtd/hbmc-am654.c
+@@ -5,18 +5,67 @@
+ 
+ #include <asm/io.h>
+ #include <dm.h>
++#include <dm/read.h>
++#include <linux/iopoll.h>
+ #include <mux.h>
+ #include <regmap.h>
+ #include <dm/device_compat.h>
+ 
++#include <bootstage.h>
++#include <asm/global_data.h>
++
++DECLARE_GLOBAL_DATA_PTR;
++
+ #define FSS_SYSC_REG	0x4
+ 
+-#define HYPERBUS_CALIB_COUNT 25
++#define HYPERBUS_CALIB_COUNT 64
++#define HYPERBUS_DLL_MIN_READS 17
++#define HYPERBUS_DLL_STABLE_READS 5
++#define HYPERBUS_CALIB_SIZE 64
++#define HYPERBUS_CFG_DLL_STAT_REG 4
++#define HYPERBUS_CFG_MDLL_LOCK BIT(0)
++#define HYPERBUS_CFG_SDLL_LOCK BIT(1)
++#define HYPERBUS_CFG_RAM_STAT_REG 8
++#define HYPERBUS_CFG_RAM_FIFO_INIT_DONE BIT(0)
+ 
+ struct am654_hbmc_priv {
+ 	void __iomem *mmiobase;
++	void __iomem *cfgregbase;
+ 	bool calibrated;
+ };
++
++/* TI's DLL stabilization sequence: generate read traffic and check both locks. */
++static void am654_hyperbus_wait_dll(struct am654_hbmc_priv *priv)
++{
++	u16 previous[HYPERBUS_CALIB_SIZE / sizeof(u16)];
++	u16 current[HYPERBUS_CALIB_SIZE / sizeof(u16)];
++	u32 locks = HYPERBUS_CFG_MDLL_LOCK | HYPERBUS_CFG_SDLL_LOCK;
++	int pass_count = 0;
++	unsigned int sample_count = 0;
++	int j;
++	u32 status;
++
++	for (j = 0; j < ARRAY_SIZE(previous); j++)
++		previous[j] = readw(priv->mmiobase + j * sizeof(u16));
++
++	/* Wait until stable; saturate the counter for an indefinite wait. */
++	for (;;) {
++		for (j = 0; j < ARRAY_SIZE(current); j++)
++			current[j] = readw(priv->mmiobase + j * sizeof(u16));
++		status = readl(priv->cfgregbase + HYPERBUS_CFG_DLL_STAT_REG);
++		if (!memcmp(current, previous, sizeof(current)) &&
++		    (status & locks) == locks)
++			pass_count++;
++		else
++			pass_count = 0;
++		memcpy(previous, current, sizeof(current));
++		if (sample_count < HYPERBUS_DLL_MIN_READS)
++			sample_count++;
++		if (sample_count >= HYPERBUS_DLL_MIN_READS &&
++		    pass_count >= HYPERBUS_DLL_STABLE_READS)
++			return;
++	}
++}
+ 
+ /* Calibrate by looking for "QRY" string within the CFI space */
+ static int am654_hyperbus_calibrate(struct udevice *dev)
+@@ -25,28 +74,60 @@
+ 	int count = HYPERBUS_CALIB_COUNT;
+ 	int pass_count = 0;
+ 	u16 qry[3];
++	ulong start_us, stabilize_us;
++	u32 status;
+ 
+ 	if (priv->calibrated)
++		return 1;
++
++	start_us = IS_ENABLED(CONFIG_ARM64) ? timer_get_boot_us() : 0;
++
++	if (priv->cfgregbase &&
++	    readl_poll_timeout(priv->cfgregbase + HYPERBUS_CFG_RAM_STAT_REG,
++			       status, status & HYPERBUS_CFG_RAM_FIFO_INIT_DONE,
++			       1000)) {
++		dev_err(dev, "Hyperbus RAM FIFO init failed\n");
+ 		return 0;
++	}
+ 
+-	writew(0xF0, priv->mmiobase);
+-	writew(0x98, priv->mmiobase + 0xaa);
++	/* Retry DLL stability and QRY validation until calibration succeeds. */
++	do {
++		writew(0xF0, priv->mmiobase);
++		writew(0x98, priv->mmiobase + 0xaa);
+ 
+-	while (count--) {
+-		qry[0] = readw(priv->mmiobase + 0x20);
+-		qry[1] = readw(priv->mmiobase + 0x22);
+-		qry[2] = readw(priv->mmiobase + 0x24);
++		if (priv->cfgregbase)
++			am654_hyperbus_wait_dll(priv);
+ 
+-		if (qry[0] == 'Q' && qry[1] == 'R' && qry[2] == 'Y')
+-			pass_count++;
+-		else
+-			pass_count = 0;
+-		if (pass_count == 5)
+-			break;
+-	}
++		count = HYPERBUS_CALIB_COUNT;
++		pass_count = 0;
++		while (count--) {
++			qry[0] = readw(priv->mmiobase + 0x20);
++			qry[1] = readw(priv->mmiobase + 0x22);
++			qry[2] = readw(priv->mmiobase + 0x24);
++
++			if (qry[0] == 'Q' && qry[1] == 'R' && qry[2] == 'Y')
++				pass_count++;
++			else
++				pass_count = 0;
++			if (pass_count == 5)
++				break;
++		}
++	} while (priv->cfgregbase && pass_count != 5);
+ 	writew(0xF0, priv->mmiobase);
+ 	writew(0xFF, priv->mmiobase);
+ 
++	stabilize_us = IS_ENABLED(CONFIG_ARM64) ?
++		timer_get_boot_us() - start_us : 0;
++	if (IS_ENABLED(CONFIG_ARM64) && priv->cfgregbase && pass_count == 5 &&
++	    IS_ENABLED(CONFIG_SOC_K3_J721E)) {
++		bool was_silent = gd->flags & GD_FLG_SILENT;
++		const char *stage = IS_ENABLED(CONFIG_SPL_BUILD) ? "A72_SPL" : "UBOOT";
++
++		gd->flags &= ~GD_FLG_SILENT;
++		printf("BOOT_METRIC: %s_HBMC_STABILIZE_US=%lu\n", stage, stabilize_us);
++		if (was_silent)
++			gd->flags |= GD_FLG_SILENT;
++	}
+ 	return pass_count == 5;
+ }
+ 
+@@ -71,7 +152,13 @@
+ 	struct am654_hbmc_priv *priv = dev_get_priv(dev);
+ 	int ret;
+ 
+-	priv->mmiobase = devfdt_remap_addr_index(dev, 1);
++	priv->cfgregbase = dev_remap_addr_name(dev, "calibration");
++	/* J7200 exposes calibration, control, memory; older DTs have two regs. */
++	priv->mmiobase = devfdt_remap_addr_index(dev, priv->cfgregbase ? 2 : 1);
++	if (!priv->mmiobase ||
++	    ((IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM) ||
++	      IS_ENABLED(CONFIG_TARGET_J7200_A72_EVM)) && !priv->cfgregbase))
++		return -EINVAL;
+ 	if (dev_read_bool(dev, "mux-controls")) {
+ 		ret = am654_select_hbmc(dev);
+ 		if (ret) {
+
+diff --git a/board/ti/j721e/evm.c b/board/ti/j721e/evm.c
+--- a/board/ti/j721e/evm.c
++++ b/board/ti/j721e/evm.c
+@@ -630,8 +630,13 @@
+ 			ret = uclass_get_device_by_driver(UCLASS_MTD,
+ 							  DM_DRIVER_GET(hbmc_am654),
+ 							  &dev);
+-			if (ret)
++			if (ret) {
++				if (spl_boot_device() == BOOT_DEVICE_NOR)
++					panic("Refusing NOR load after HBMC probe failure\n");
+ 				debug("Failed to probe hyperflash\n");
+-		}
+-	}
+-}
++			}
++		} else if (spl_boot_device() == BOOT_DEVICE_NOR) {
++			panic("HyperFlash boot requires SW3.1=ON; GPIO read failed or selected OSPI\n");
++		}
++	}
++}
+diff --git a/arch/arm/dts/k3-j7200-common-proc-board-u-boot.dtsi b/arch/arm/dts/k3-j7200-common-proc-board-u-boot.dtsi
+--- a/arch/arm/dts/k3-j7200-common-proc-board-u-boot.dtsi
++++ b/arch/arm/dts/k3-j7200-common-proc-board-u-boot.dtsi
+@@ -204,3 +204,27 @@
+ &serdes0 {
+ 	bootph-all;
+ };
++
++/* Fixed HyperFlash boot: SW3.1 must be ON. */
++&hbmc {
++	reg = <0x00 0x47030000 0x00 0xc>,
++	      <0x00 0x47034000 0x00 0x100>,
++	      <0x05 0x00000000 0x01 0x0000000>;
++	reg-names = "calibration", "control", "memory";
++	status = "okay";
++};
++
++&ospi0 {
++	status = "disabled";
++};
++
++/* A72 needs translation for the calibration status register resource. */
++#ifdef CONFIG_ARM64
++&fss {
++	ranges = <0x0 0x47000000 0x0 0x47000000 0x0 0x100>,
++		 <0x0 0x47030000 0x0 0x47030000 0x0 0xc>,
++		 <0x0 0x47034000 0x0 0x47040000 0x0 0x100>,
++		 <0x0 0x47040000 0x0 0x47040000 0x0 0x100>,
++		 <0x5 0x00000000 0x5 0x00000000 0x1 0x0000000>;
++};
++#endif
+diff --git a/arch/arm/dts/k3-j7200-r5-common-proc-board.dts b/arch/arm/dts/k3-j7200-r5-common-proc-board.dts
+--- a/arch/arm/dts/k3-j7200-r5-common-proc-board.dts
++++ b/arch/arm/dts/k3-j7200-r5-common-proc-board.dts
+@@ -102,7 +102,8 @@
+ };
+ 
+ &hbmc {
+-	reg = <0x0 0x47040000 0x0 0x100>,
++	reg = <0x0 0x47030000 0x0 0xc>,
++		<0x0 0x47034000 0x0 0x100>,
+ 		<0x0 0x50000000 0x0 0x8000000>;
+ 	ranges = <0x0 0x0 0x0 0x50000000 0x4000000>,
+ 		<0x1 0x0 0x0 0x54000000 0x800000>;
+diff --git a/drivers/remoteproc/ti_k3_arm64_rproc.c b/drivers/remoteproc/ti_k3_arm64_rproc.c
+--- a/drivers/remoteproc/ti_k3_arm64_rproc.c
++++ b/drivers/remoteproc/ti_k3_arm64_rproc.c
+@@ -118,7 +118,6 @@
+ 		writel(upper_32_bits((u64)boot_us),
+ 		       BOOT_METRIC_SEED_HI_ADDR);
+ 		writel(BOOT_METRIC_SCRATCH_MAGIC, BOOT_METRIC_SCRATCH_ADDR);
+-		printf("BOOT_METRIC: R5_GTC_SEED_US=%lu\n", boot_us);
+ 	}
+ 
+ 	/*
+diff --git a/arch/arm/mach-k3/common.c b/arch/arm/mach-k3/common.c
+--- a/arch/arm/mach-k3/common.c
++++ b/arch/arm/mach-k3/common.c
+@@ -90,6 +90,9 @@
+ 	u64 fw_caps;
+ 	int ret;
+ 
++	if (CONFIG_IS_ENABLED(SILENT_CONSOLE))
++		return;
++
+ 	ret = fw_ops->query_dm_cap(ti_sci, &fw_caps);
+ 	if (ret) {
+ 		printf("Failed to query DM firmware capability %d\n", ret);
+diff --git a/drivers/mux/mmio.c b/drivers/mux/mmio.c
+--- a/drivers/mux/mmio.c
++++ b/drivers/mux/mmio.c
+@@ -91,7 +91,7 @@
+ 
+ 	ret = dev_read_u32_array(dev, "idle-states", idle_states, num_fields);
+ 	if (ret < 0) {
+-		log_err("idle-states");
++		log_debug("Optional idle-states unavailable: %d\n", ret);
+ 		devm_kfree(dev, idle_states);
+ 		idle_states = NULL;
+ 	}
+
+diff --git a/common/spl/spl_nor.c b/common/spl/spl_nor.c
+--- a/common/spl/spl_nor.c
++++ b/common/spl/spl_nor.c
+@@ -10,12 +10,32 @@
+ #include <spl.h>
+ #include <spl_load.h>
+ 
++#include <bootstage.h>
++#include <time.h>
++#include <asm/global_data.h>
++
++DECLARE_GLOBAL_DATA_PTR;
++
++/* Sum only NOR-to-DDR reads, excluding FIT parsing and authentication. */
++static ulong nor_load_us;
++
++static ulong spl_nor_time_us(void)
++{
++	if (IS_ENABLED(CONFIG_ARM64))
++		return timer_get_boot_us();
++	return timer_get_us();
++}
++
+ static ulong spl_nor_load_read(struct spl_load_info *load, ulong sector,
+ 			       ulong count, void *buf)
+ {
++	ulong start_us;
++
+ 	debug("%s: sector %lx, count %lx, buf %p\n",
+ 	      __func__, sector, count, buf);
++	start_us = spl_nor_time_us();
+ 	memcpy(buf, map_sysmem(sector, count), count);
++	nor_load_us += spl_nor_time_us() - start_us;
+ 
+ 	return count;
+ }
+@@ -29,6 +49,8 @@
+ 			      struct spl_boot_device *bootdev)
+ {
+ 	struct spl_load_info load;
++	bool was_silent;
++	int ret;
+ 
+ 	/*
+ 	 * Loading of the payload to SDRAM is done with skipping of
+@@ -93,6 +115,17 @@
+ 	 * defined location in SDRAM
+ 	 */
+ 	spl_load_init(&load, spl_nor_load_read, NULL, 1);
+-	return spl_load(spl_image, bootdev, &load, 0, spl_nor_get_uboot_base());
++	nor_load_us = 0;
++	ret = spl_load(spl_image, bootdev, &load, 0, spl_nor_get_uboot_base());
++	if (!ret && IS_ENABLED(CONFIG_SOC_K3_J721E)) {
++		was_silent = gd->flags & GD_FLG_SILENT;
++		gd->flags &= ~GD_FLG_SILENT;
++		printf("BOOT_METRIC: %s=%lu\n",
++		       IS_ENABLED(CONFIG_ARM64) ? "UBOOT_IMG_LOAD_US" : "TISPL_LOAD_US",
++		       nor_load_us);
++		if (was_silent)
++			gd->flags |= GD_FLG_SILENT;
++	}
++	return ret;
+ }
+ SPL_LOAD_IMAGE_METHOD("NOR", 0, BOOT_DEVICE_NOR, spl_nor_load_image);
+
+diff --git a/cmd/mtd.c b/cmd/mtd.c
+--- a/cmd/mtd.c
++++ b/cmd/mtd.c
+@@ -10,6 +10,9 @@
+ 
+ #include <command.h>
+ #include <console.h>
++
++#include <bootstage.h>
++#include <asm/global_data.h>
+ #include <led.h>
+ #if CONFIG_IS_ENABLED(CMD_MTD_OTP)
+ #include <hexdump.h>
+@@ -21,6 +24,8 @@
+ #include <linux/err.h>
+ 
+ #include <linux/ctype.h>
++
++DECLARE_GLOBAL_DATA_PTR;
+ 
+ static struct mtd_info *get_mtd_by_name(const char *name)
+ {
+@@ -473,6 +478,8 @@
+ 	struct mtd_oob_ops io_op = {};
+ 	uint user_addr = 0, npages;
+ 	const char *cmd = argv[0];
++	const char *load_metric = NULL;
++	ulong load_us = 0, start_us;
+ 	struct mtd_info *mtd;
+ 	u32 oob_len;
+ 	u8 *buf;
+@@ -522,6 +529,14 @@
+ 		len = round_up(len, mtd->writesize);
+ 		printf("Size not on a page boundary (0x%x), rounding to 0x%llx\n",
+ 		       mtd->writesize, len);
++	}
++
++	if (IS_ENABLED(CONFIG_SOC_K3_J721E) && read && !dump && !raw && !woob &&
++	    mtd->type == MTD_NORFLASH && !strcmp(mtd->name, "nor0")) {
++		if (start_off == 0x800000 && user_addr == 0x82000000)
++			load_metric = "KERNEL_IMAGE_LOAD_US";
++		else if (start_off == 0x700000 && user_addr == 0x88000000)
++			load_metric = "DTB_LOAD_US";
+ 	}
+ 
+ 	remaining = len;
+@@ -570,9 +585,13 @@
+ 			continue;
+ 		}
+ 
+-		if (read)
++		if (read) {
++			if (load_metric)
++				start_us = timer_get_boot_us();
+ 			ret = mtd_read_oob(mtd, off, &io_op);
+-		else
++			if (load_metric)
++				load_us += timer_get_boot_us() - start_us;
++		} else
+ 			ret = mtd_special_write_oob(mtd, off, &io_op,
+ 						    write_empty_pages, woob);
+ 
+@@ -589,6 +608,15 @@
+ 	}
+ 
+ 	led_activity_off();
++
++	if (!ret && load_metric) {
++		bool was_silent = gd->flags & GD_FLG_SILENT;
++
++		gd->flags &= ~GD_FLG_SILENT;
++		printf("BOOT_METRIC: %s=%lu\n", load_metric, load_us);
++		if (was_silent)
++			gd->flags |= GD_FLG_SILENT;
++	}
+ 
+ 	if (!ret && dump)
+ 		mtd_dump_device_buf(mtd, start_off, buf, len, woob);
+
+diff --git a/arch/arm/mach-k3/r5/sysfw-loader.c b/arch/arm/mach-k3/r5/sysfw-loader.c
+--- a/arch/arm/mach-k3/r5/sysfw-loader.c
++++ b/arch/arm/mach-k3/r5/sysfw-loader.c
+@@ -335,6 +335,9 @@
+ 	return addr + CONFIG_K3_SYSFW_IMAGE_SPI_OFFS;
+ }
+ 
++#endif
++
++#if CONFIG_IS_ENABLED(SPI_LOAD) || CONFIG_IS_ENABLED(NOR_SUPPORT)
+ static void k3_sysfw_spi_copy(u32 *dst, u32 *src, size_t len)
+ {
+ 	size_t i;
+@@ -370,7 +373,7 @@
+ 	struct spl_image_info spl_image = { 0 };
+ 	struct spl_boot_device bootdev = { 0 };
+ 	struct ti_sci_handle *ti_sci;
+-#if CONFIG_IS_ENABLED(SPI_LOAD)
++#if CONFIG_IS_ENABLED(SPI_LOAD) || CONFIG_IS_ENABLED(NOR_SUPPORT)
+ 	void *sysfw_spi_base;
+ #endif
+ 	int ret = 0;
+@@ -424,8 +427,10 @@
+ #if CONFIG_IS_ENABLED(SPI_LOAD)
+ 	case BOOT_DEVICE_SPI:
+ 		sysfw_spi_base = k3_sysfw_get_spi_addr();
+-		if (!sysfw_spi_base)
++		if (!sysfw_spi_base) {
+ 			ret = -ENODEV;
++			break;
++		}
+ 		k3_sysfw_spi_copy(sysfw_load_address, sysfw_spi_base,
+ 				  CONFIG_K3_SYSFW_IMAGE_SIZE_MAX);
+ 		break;
+@@ -433,8 +438,10 @@
+ #if CONFIG_IS_ENABLED(NOR_SUPPORT)
+ 	case BOOT_DEVICE_HYPERFLASH:
+ 		sysfw_spi_base = get_sysfw_hf_addr();
+-		if (!sysfw_spi_base)
++		if (!sysfw_spi_base) {
+ 			ret = -ENODEV;
++			break;
++		}
+ 		k3_sysfw_spi_copy(sysfw_load_address, sysfw_spi_base,
+ 				  CONFIG_K3_SYSFW_IMAGE_SIZE_MAX);
+ 		break;
+diff --git a/dts/upstream/src/arm64/ti/k3-j7200-som-p0.dtsi b/dts/upstream/src/arm64/ti/k3-j7200-som-p0.dtsi
+--- a/dts/upstream/src/arm64/ti/k3-j7200-som-p0.dtsi
++++ b/dts/upstream/src/arm64/ti/k3-j7200-som-p0.dtsi
+@@ -218,12 +218,12 @@
+ 			};
+ 
+ 			partition@700000 {
+-				label = "hbmc.env";
+-				reg = <0x700000 0x40000>;
++				label = "hbmc.dtb";
++				reg = <0x700000 0x100000>;
+ 			};
+ 
+ 			partition@800000 {
+-				label = "hbmc.rootfs";
++				label = "hbmc.kernel";
+ 				reg = <0x800000 0x3800000>;
+ 			};
+ 		};

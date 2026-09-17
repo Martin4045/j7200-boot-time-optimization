@@ -1,0 +1,42 @@
+From: Boot Time Experiment <boot-time@example.com>
+Subject: [PATCH] arm64: dts: ti: select J7200 HyperFlash and reserve kernel/DTB slots
+
+Upstream-Status: Inappropriate [fixed J7200 HyperFlash boot and diagnostics]
+
+diff --git a/arch/arm64/boot/dts/ti/k3-j7200-som-p0.dtsi b/arch/arm64/boot/dts/ti/k3-j7200-som-p0.dtsi
+--- a/arch/arm64/boot/dts/ti/k3-j7200-som-p0.dtsi
++++ b/arch/arm64/boot/dts/ti/k3-j7200-som-p0.dtsi
+@@ -186,7 +186,7 @@
+ 	/* OSPI and HBMC are muxed inside FSS, Bootloader will enable
+ 	 * appropriate node based on board detection
+ 	 */
+-	status = "disabled";
++	status = "okay";
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&mcu_fss0_hpb0_pins_default>;
+ 	ranges = <0x00 0x00 0x05 0x00000000 0x4000000>, /* 64MB Flash on CS0 */
+@@ -218,12 +218,12 @@
+ 			};
+ 
+ 			partition@700000 {
+-				label = "hbmc.env";
+-				reg = <0x700000 0x40000>;
++				label = "hbmc.dtb";
++				reg = <0x700000 0x100000>;
+ 			};
+ 
+ 			partition@800000 {
+-				label = "hbmc.rootfs";
++				label = "hbmc.kernel";
+ 				reg = <0x800000 0x3800000>;
+ 			};
+ 		};
+@@ -478,7 +478,7 @@
+ };
+ 
+ &ospi0 {
+-	status = "okay";
++	status = "disabled";
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&mcu_fss0_ospi0_pins_default>;
+ 

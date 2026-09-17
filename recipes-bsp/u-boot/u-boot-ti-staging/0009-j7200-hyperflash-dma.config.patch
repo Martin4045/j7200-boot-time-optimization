@@ -1,0 +1,19 @@
+From: Martin <gsp4045@cyberperseus.com>
+Subject: [PATCH 2/2] j7200: restore UDMA for HyperFlash image reads
+
+The minimal SD configuration uses SDHCI ADMA and disables NAVSS UDMA.
+Restore UDMA and its channel API for the existing CFI dma_memcpy path.
+Select this fragment after the minimal and HyperFlash fragments on A72;
+keep SPL DMA disabled and leave R5 unchanged.
+
+Upstream-Status: Inappropriate [J7200 HyperFlash boot configuration]
+
+diff --git a/configs/j7200-a72-hyperflash-dma.config b/configs/j7200-a72-hyperflash-dma.config
+new file mode 100644
+--- /dev/null
++++ b/configs/j7200-a72-hyperflash-dma.config
+@@ -0,0 +1,4 @@
++# Restore the CFI mem-to-mem DMA path in U-Boot proper only.
++CONFIG_TI_K3_NAVSS_UDMA=y
++CONFIG_DMA_CHANNELS=y
++# CONFIG_SPL_DMA is not set
