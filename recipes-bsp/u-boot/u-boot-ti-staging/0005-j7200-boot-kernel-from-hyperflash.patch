@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jeongwoo Yeom <studavid@cyberperseus.com>
+Date: Fri, 18 Sep 2026 00:00:00 +0900
+Subject: [PATCH] configs: j7200: boot kernel from HyperFlash
+
+Keep the root filesystem and remote processor firmware on eMMC, but load
+the Linux Image and DTB from fixed HyperFlash slots. This avoids filesystem
+and generic bootflow discovery for the two large boot artifacts.
+
+Use the fixed-partition layout from the J7200 device tree for the HyperFlash
+MTD definition. The previous 512 KiB tiboot3 entry did not match the 1 MiB
+DT partition and was smaller than current tiboot3 binaries.
+
+Set bootdelay to zero and run the dedicated path directly. The path retains
+the eMMC root PARTUUID setup, Ethernet PHY initialization, and remote
+processor firmware loading required by the running system.
+
+Signed-off-by: Jeongwoo Yeom <studavid@cyberperseus.com>
+---
+diff --git a/board/ti/j721e/j721e.env b/board/ti/j721e/j721e.env
+--- a/board/ti/j721e/j721e.env
++++ b/board/ti/j721e/j721e.env
+@@ -35,6 +35,25 @@
+ dorprocboot=1
+ 
+ #if CONFIG_TARGET_J7200_A72_EVM
++hbmc_kernel_addr=0x500800000
++hbmc_kernel_words=0x600000
++hbmc_fdt_addr=0x502000000
++hbmc_fdt_words=0x10000
++load_hbmc_images=
++	cp.l ${hbmc_kernel_addr} ${loadaddr} ${hbmc_kernel_words};
++	cp.l ${hbmc_fdt_addr} ${fdtaddr} ${hbmc_fdt_words}
++bootcmd_hbmc_emmc=
++	mmc dev ${mmcdev};
++	mmc rescan;
++	run init_mmc;
++	run update_do_main_cpsw0_qsgmii_phyinit;
++	if test ${do_main_cpsw0_qsgmii_phyinit} -eq 1; then
++		run main_cpsw0_qsgmii_phyinit;
++	fi;
++	run boot_rprocs;
++	echo Loading Linux Image and DTB from HyperFlash;
++	run load_hbmc_images;
++	run run_kern
+ update_do_main_cpsw0_qsgmii_phyinit=setenv do_main_cpsw0_qsgmii_phyinit 1;
+ init_main_cpsw0_qsgmii_phy=gpio set gpio@22_17;
+ 	gpio clear gpio@22_16
+diff --git a/configs/j7200_evm_a72_defconfig b/configs/j7200_evm_a72_defconfig
+--- a/configs/j7200_evm_a72_defconfig
++++ b/configs/j7200_evm_a72_defconfig
+@@ -1,6 +1,8 @@
+ CONFIG_ARM=y
+ CONFIG_ARCH_K3=y
+ CONFIG_SYS_MALLOC_F_LEN=0x8000
++CONFIG_BOOTDELAY=0
++CONFIG_BOOTCOMMAND="run bootcmd_hbmc_emmc"
+ CONFIG_SPL_GPIO=y
+ CONFIG_SPL_LIBCOMMON_SUPPORT=y
+ CONFIG_SPL_LIBGENERIC_SUPPORT=y
+@@ -71,7 +73,7 @@
+ CONFIG_CMD_USB=y
+ CONFIG_CMD_USB_MASS_STORAGE=y
+ CONFIG_MTDIDS_DEFAULT="nor0=47040000.spi.0,nor0=47034000.hyperbus"
+-CONFIG_MTDPARTS_DEFAULT="mtdparts=47040000.spi.0:512k(ospi.tiboot3),2m(ospi.tispl),4m(ospi.u-boot),128k(ospi.env),128k(ospi.env.backup),1m(ospi.sysfw),-@8m(ospi.rootfs);47034000.hyperbus:512k(hbmc.tiboot3),2m(hbmc.tispl),4m(hbmc.u-boot),256k(hbmc.env),1m(hbmc.sysfw),-@8m(hbmc.rootfs)"
++CONFIG_MTDPARTS_DEFAULT="mtdparts=47040000.spi.0:512k(ospi.tiboot3),2m(ospi.tispl),4m(ospi.u-boot),128k(ospi.env),128k(ospi.env.backup),1m(ospi.sysfw),-@8m(ospi.rootfs);47034000.hyperbus:1m(hbmc.tiboot3),2m(hbmc.tispl),4m(hbmc.u-boot),256k(hbmc.env),-@8m(hbmc.rootfs)"
+ CONFIG_CMD_UBI=y
+ # CONFIG_ISO_PARTITION is not set
+ # CONFIG_SPL_EFI_PARTITION is not set
+-- 
+2.43.0

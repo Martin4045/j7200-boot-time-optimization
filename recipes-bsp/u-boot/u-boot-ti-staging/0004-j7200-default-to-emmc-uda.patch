@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jeongwoo Yeom <studavid@cyberperseus.com>
+Date: Fri, 18 Sep 2026 00:00:00 +0900
+Subject: [PATCH] configs: j7200: default to eMMC UDA boot
+
+J7200 uses MMC device 0 for eMMC and device 1 for the removable SD card.
+Select eMMC UDA partition 2 in the compiled-in environment so systems using
+CONFIG_ENV_IS_NOWHERE keep booting from eMMC across cold boots and reboots.
+
+Limit standard boot targets to mmc0 to avoid probing the absent SD card if
+the TI-specific MMC boot command cannot boot the system.
+
+Signed-off-by: Jeongwoo Yeom <studavid@cyberperseus.com>
+---
+ board/ti/j721e/j721e.env | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/board/ti/j721e/j721e.env b/board/ti/j721e/j721e.env
+index 9e1343a0d9..9bfdbe1d6e 100644
+--- a/board/ti/j721e/j721e.env
++++ b/board/ti/j721e/j721e.env
+@@ -26,10 +26,10 @@ name_mcur5f0_0fw=/lib/firmware/j7200-mcu-r5f0_0-fw
+ name_mcur5f0_0fw=/lib/firmware/j7200-mcu-r5f0_0-fw
+ #endif
+ 
+-boot_targets=mmc1 mmc0 usb pxe dhcp
++boot_targets=mmc0
+ boot=mmc
+-mmcdev=1
+-bootpart=1:2
++mmcdev=0
++bootpart=0:2
+ bootdir=/boot
+ rd_spec=-
+ dorprocboot=1
+-- 
+2.43.0

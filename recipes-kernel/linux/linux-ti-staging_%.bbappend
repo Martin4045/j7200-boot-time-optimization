@@ -5,3 +5,7 @@ SRC_URI:append = " \
     file://0002-init-import-u-boot-boot-metrics.patch \
     file://0003-timekeeping-report-gtc-monotonic-bridge.patch \
 "
+
+SRC_URI:append:j7200 = " \
+    file://0004-arm64-dts-ti-j7200-disable-sd-for-emmc-boot.patch \
+"

@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: yeom <yeom@localhost>
+Date: Fri, 18 Sep 2026 11:30:00 +0900
+Subject: [PATCH] arm64: dts: ti: j7200: disable SD controller for eMMC boot
+
+The eMMC-only system has no card in the removable SD slot. Probing the
+enabled SD controller waits for its power-on timeout and delays mounting
+the eMMC root filesystem by about 1.5 seconds.
+
+Disable main_sdhci1 while keeping main_sdhci0, the on-board eMMC,
+enabled.
+
+Signed-off-by: yeom <yeom@localhost>
+---
+ arch/arm64/boot/dts/ti/k3-j7200-common-proc-board.dts | 10 +---------
+ 1 file changed, 1 insertion(+), 9 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/ti/k3-j7200-common-proc-board.dts b/arch/arm64/boot/dts/ti/k3-j7200-common-proc-board.dts
+--- a/arch/arm64/boot/dts/ti/k3-j7200-common-proc-board.dts
++++ b/arch/arm64/boot/dts/ti/k3-j7200-common-proc-board.dts
+@@ -399,15 +399,7 @@ &main_sdhci0 {
+ };
+ 
+ &main_sdhci1 {
+-	/* SD card */
+-	status = "okay";
+-	pinctrl-0 = <&main_mmc1_pins_default>;
+-	pinctrl-names = "default";
+-	vmmc-supply = <&vdd_mmc1>;
+-	vqmmc-supply = <&vdd_sd_dv>;
+-	bootph-all;
+-	ti,driver-strength-ohm = <50>;
+-	disable-wp;
++	status = "disabled";
+ };
+ 
+ &serdes_ln_ctrl {
+-- 
+2.43.0
