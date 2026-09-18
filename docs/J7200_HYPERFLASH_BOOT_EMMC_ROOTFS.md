@@ -62,13 +62,29 @@ MACHINE=j7200-evm bitbake tisdk-default-image
 
 이 문서를 작성하면서 BitBake 빌드는 실행하지 않았다.
 
-## 5. SD 카드용 업데이트 묶음 생성
+## 5. SD 카드용 업데이트 묶음 생성과 복사
 
-빌드가 끝난 뒤 레이어 루트에서 실행한다.
+빌드가 끝나면 SD 카드를 PC 카드리더에 삽입한 뒤 레이어 루트에서 실행한다.
 
 ```bash
 cd /mnt/mydisk/dasan/yocto-build/sources/meta-boot-time
 ./tools/create_hyperflash_update.py
+```
+
+도구는 다음 작업을 한 번에 수행한다.
+
+1. `hyperflash-update/`에 FIT 기록 스크립트와 payload를 생성한다.
+2. 이동식 디스크에서 FAT `boot` 파티션을 자동으로 찾는다.
+3. 필요하면 `udisksctl`로 FAT 파티션을 쓰기 가능하게 다시 마운트한다.
+4. SD 부트 파일을 보존하면서 `hf-` 접두사의 업데이트 파일을 FAT 루트에 복사한다.
+5. 복사한 모든 파일의 크기와 SHA-256을 원본과 비교한다.
+6. 모든 SD 파티션을 마운트 해제하고 카드리더 전원을 차단한다.
+
+성공하면 마지막에 다음 메시지가 출력된다.
+
+```text
+SD copy and SHA-256 verification: PASS
+SD card is safe to remove: /dev/sdX
 ```
 
 `hyperflash-update/`에 다음 파일이 생성된다.
@@ -90,9 +106,27 @@ manifest.json
 
 따라서 0005 패치 적용 후 새로 빌드하지 않은 결과물을 실수로 기록할 수 없다. `manifest.json`에는 입력과 출력의 크기 및 SHA-256이 기록된다.
 
-## 6. SD 카드에 복사
+## 6. SD 카드 자동 탐지 옵션
 
-SD 카드의 첫 번째 FAT 파티션 루트에 `hyperflash-update/` 안의 파일을 모두 복사한다. 디렉터리째 복사하지 말고 파일들이 FAT 파티션 최상위에 오게 한다. Bootloader에는 `hf-` 접두사를 사용하므로 SD 카드 자체의 `tiboot3.bin`, `tispl.bin`, `u-boot.img`를 덮어쓰지 않는다.
+도구는 `RM=1`인 이동식 디스크의 FAT 파티션만 허용하므로 PC의 EFI 파티션을 선택하지 않는다. `boot` 라벨 후보가 하나면 자동으로 선택한다. 이동식 FAT 파티션이 여러 개라면 정확한 첫 번째 파티션을 지정한다.
+
+```bash
+./tools/create_hyperflash_update.py --sd-device /dev/sdX1
+```
+
+SD 복사 없이 업데이트 묶음만 생성하려면 다음 옵션을 사용한다.
+
+```bash
+./tools/create_hyperflash_update.py --no-sd-copy
+```
+
+복사 후 SD 카드를 마운트 상태로 유지해야 한다면 다음 옵션을 사용한다.
+
+```bash
+./tools/create_hyperflash_update.py --keep-sd-mounted
+```
+
+Bootloader에는 `hf-` 접두사를 사용하므로 SD 카드 자체의 `tiboot3.bin`, `tispl.bin`, `u-boot.img`를 덮어쓰지 않는다.
 
 현재 Linux DT에서 SD 컨트롤러를 비활성화했어도 이 작업에는 문제가 없다. 기록은 Linux가 아니라 U-Boot에서 수행한다.
 
