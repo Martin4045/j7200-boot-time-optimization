@@ -16,3 +16,11 @@ SRC_URI:append = " \
 # MACHINEOVERRIDE of j7200-evm-k3r5, so override syntax alone would apply the
 # A72 fragment to the R5 build as well.  Select by the exact MACHINE instead.
 UBOOT_CONFIG_FRAGMENTS:append = " ${@'j7200-r5-minimal.config' if d.getVar('MACHINE') == 'j7200-evm-k3r5' else 'j7200-a72-minimal.config' if d.getVar('MACHINE') == 'j7200-evm' else ''}"
+
+SRC_URI:append = " \
+    file://0008-j7200-emmc-boot.patch \
+    file://j7200-emmc.config;subdir=git/configs \
+    file://j7200-r5-emmc.config;subdir=git/configs \
+    file://j7200-a72-emmc.config;subdir=git/configs \
+"
+UBOOT_CONFIG_FRAGMENTS:append = " ${@'j7200-emmc.config j7200-r5-emmc.config' if d.getVar('MACHINE') == 'j7200-evm-k3r5' else 'j7200-emmc.config j7200-a72-emmc.config' if d.getVar('MACHINE') == 'j7200-evm' else ''}"

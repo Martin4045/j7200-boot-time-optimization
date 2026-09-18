@@ -1,0 +1,83 @@
+Subject: [PATCH] j7200: select optimized eMMC or SD Linux boot path
+
+Keep the SD recovery path and select eMMC user partition 2 for Linux
+when the primary boot straps select eMMC. SPL uses the SDK raw layout.
+Disable the unused SD controller in the Linux FDT only for eMMC boot.
+Keep the SD recovery path unchanged and fail boot if the fixup fails.
+
+Upstream-Status: Inappropriate [fixed J7200 boot configuration]
+
+diff --git a/board/ti/j721e/evm.c b/board/ti/j721e/evm.c
+--- a/board/ti/j721e/evm.c
++++ b/board/ti/j721e/evm.c
+@@ -7,6 +7,12 @@
+  *
+  */
+ 
++#include <command.h>
++#include <env.h>
++#include <linux/libfdt.h>
++#include <mapmem.h>
++#include <vsprintf.h>
++#include <asm/io.h>
+ #include <efi_loader.h>
+ #include <generic-phy.h>
+ #include <image.h>
+@@ -36,6 +42,57 @@
+ #define DAUGHTER_CARD_NO_OF_MAC_ADDR	8
+ 
+ DECLARE_GLOBAL_DATA_PTR;
++
++#if defined(CONFIG_TARGET_J7200_A72_EVM) && !defined(CONFIG_XPL_BUILD)
++/* Match the primary MMC boot-device decoding used by K3 SPL. */
++static int do_j7200_mmc_bootdev(struct cmd_tbl *cmdtp, int flag,
++			      int argc, char *const argv[])
++{
++	u32 wkup = readl(CTRLMMR_WKUP_DEVSTAT);
++	u32 main = readl(CTRLMMR_MAIN_DEVSTAT);
++	u32 mode;
++	const char *dev;
++
++	if (wkup & WKUP_DEVSTAT_MCU_OMLY_MASK)
++		return CMD_RET_FAILURE;
++	mode = (wkup & WKUP_DEVSTAT_PRIMARY_BOOTMODE_MASK) >>
++		WKUP_DEVSTAT_PRIMARY_BOOTMODE_SHIFT;
++	mode |= (main & MAIN_DEVSTAT_BOOT_MODE_B_MASK) << BOOT_MODE_B_SHIFT;
++	if (mode == BOOT_DEVICE_MMC1)
++		dev = "0";
++	else if (mode == BOOT_DEVICE_MMC2)
++		dev = (main & MAIN_DEVSTAT_PRIM_BOOTMODE_MMC_PORT_MASK) ? "1" : "0";
++	else
++		return CMD_RET_FAILURE;
++
++	if (argc == 2 && !strcmp(dev, "0")) {
++		void *fdt = map_sysmem(hextoul(argv[1], NULL), 0);
++		int ret = fdt_check_header(fdt);
++		int node;
++
++		if (!ret)
++			ret = fdt_open_into(fdt, fdt, fdt_totalsize(fdt) + 256);
++		if (!ret) {
++			node = fdt_path_offset(fdt, "/bus@100000/mmc@4fb0000");
++			ret = node < 0 ? node :
++				fdt_setprop_string(fdt, node, "status", "disabled");
++		}
++		unmap_sysmem(fdt);
++		if (ret) {
++			printf("eMMC SD-controller fixup failed: %s\n",
++			       fdt_strerror(ret));
++			return CMD_RET_FAILURE;
++		}
++	}
++
++	return env_set("boot_mmc", dev) ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
++}
++
++U_BOOT_CMD(j7200_mmc_bootdev, 2, 0, do_j7200_mmc_bootdev,
++	   "select eMMC or SD from primary boot straps",
++	   "[linux-fdt-address] - also disable SD in the eMMC Linux FDT");
++#endif
++
+ 
+ struct efi_fw_image fw_images[] = {
+ 	{
