@@ -73,7 +73,7 @@ cd /mnt/mydisk/dasan/yocto-build/sources/meta-boot-time
 
 도구는 다음 작업을 한 번에 수행한다.
 
-1. `hyperflash-update/`에 FIT 기록 스크립트와 payload를 생성한다.
+1. `hyperflash-update/`에 U-Boot 환경 명령 파일과 payload를 생성한다.
 2. 이동식 디스크에서 FAT `boot` 파티션을 자동으로 찾는다.
 3. 필요하면 `udisksctl`로 FAT 파티션을 쓰기 가능하게 다시 마운트한다.
 4. SD 부트 파일을 보존하면서 `hf-` 접두사의 업데이트 파일을 FAT 루트에 복사한다.
@@ -95,7 +95,7 @@ hf-tispl.bin
 hf-u-boot.img
 hf-kernel-dtb.bin
 flash-hyperflash.cmd
-flash-hyperflash.scr
+flash-hyperflash.env
 manifest.json
 ```
 
@@ -136,12 +136,15 @@ Bootloader에는 `hf-` 접두사를 사용하므로 SD 카드 자체의 `tiboot3
 2. 보드의 HyperFlash/OSPI mux가 HyperFlash를 선택하도록 설정한다.
 3. SD 카드를 꽂고 부팅한다.
 4. 현재 U-Boot의 2초 카운트다운 중 아무 키나 눌러 프롬프트에 진입한다.
-5. 다음 두 명령만 실행한다.
+5. 다음 세 명령을 실행한다.
 
 ```text
-fatload mmc 1:1 ${scriptaddr} flash-hyperflash.scr
-source ${scriptaddr}
+fatload mmc 1:1 ${scriptaddr} flash-hyperflash.env
+env import -t ${scriptaddr} ${filesize} hf_setup hf_kernel hf_uboot hf_tispl hf_tiboot3 hf_update
+run hf_update
 ```
+
+`env import`는 위에 지정한 `hf_` 변수 여섯 개만 현재 U-Boot 환경으로 가져온다. 이 보드의 U-Boot는 `source`로 실행하는 FIT에 `custMpk` 서명을 필수로 요구하므로, 서명 없는 `flash-hyperflash.scr`은 `Failed to verify required signature 'key-custMpk'` 오류로 실행할 수 없다.
 
 스크립트는 다음 순서로 처리한다.
 

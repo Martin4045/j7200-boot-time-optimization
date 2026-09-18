@@ -44,8 +44,17 @@ SD_UPDATE_FILES = (
     "hf-u-boot.img",
     "hf-kernel-dtb.bin",
     "flash-hyperflash.cmd",
-    "flash-hyperflash.scr",
+    "flash-hyperflash.env",
     "manifest.json",
+)
+
+UPDATE_ENV_VARS = (
+    "hf_setup",
+    "hf_kernel",
+    "hf_uboot",
+    "hf_tispl",
+    "hf_tiboot3",
+    "hf_update",
 )
 
 
@@ -265,117 +274,76 @@ def make_bundle(image: Path, dtb: Path, output: Path) -> None:
     output.write_bytes(bundle)
 
 
-def make_flash_script(output: Path) -> Path:
+def make_flash_environment(output: Path) -> Path:
     command_file = output / "flash-hyperflash.cmd"
-    its_file = output / "flash-hyperflash.its"
-    script_file = output / "flash-hyperflash.scr"
+    environment_file = output / "flash-hyperflash.env"
+    variables = {
+        "hf_setup": (
+            "echo J7200 HyperFlash update started; "
+            "setenv mtdparts 'mtdparts=47034000.hyperbus:"
+            "1m(hbmc.tiboot3),2m(hbmc.tispl),4m(hbmc.u-boot),"
+            "256k(hbmc.env),-@8m(hbmc.rootfs)'; mtd list"
+        ),
+        "hf_kernel": (
+            "echo Writing Linux Image and DTB bundle; "
+            "if fatload mmc 1:1 ${loadaddr} hf-kernel-dtb.bin; then "
+            "if test ${filesize} = 1840000; then "
+            "if mtd erase hbmc.rootfs 0 0x1840000 && "
+            "mtd write hbmc.rootfs ${loadaddr} 0 ${filesize} && "
+            "cmp.b ${loadaddr} 0x500800000 ${filesize}; then "
+            "echo Linux Image and DTB verified; else "
+            "echo ERROR: Linux Image and DTB update failed; test 0 = 1; fi; "
+            "else echo ERROR: invalid hf-kernel-dtb.bin size; test 0 = 1; fi; "
+            "else echo ERROR: cannot load hf-kernel-dtb.bin; test 0 = 1; fi"
+        ),
+        "hf_uboot": (
+            "echo Writing u-boot.img; "
+            "if fatload mmc 1:1 ${loadaddr} hf-u-boot.img; then "
+            "if mtd erase hbmc.u-boot && "
+            "mtd write hbmc.u-boot ${loadaddr} 0 ${filesize} && "
+            "cmp.b ${loadaddr} 0x500300000 ${filesize}; then "
+            "echo u-boot.img verified; else "
+            "echo ERROR: u-boot.img update failed; test 0 = 1; fi; "
+            "else echo ERROR: cannot load hf-u-boot.img; test 0 = 1; fi"
+        ),
+        "hf_tispl": (
+            "echo Writing tispl.bin; "
+            "if fatload mmc 1:1 ${loadaddr} hf-tispl.bin; then "
+            "if mtd erase hbmc.tispl && "
+            "mtd write hbmc.tispl ${loadaddr} 0 ${filesize} && "
+            "cmp.b ${loadaddr} 0x500100000 ${filesize}; then "
+            "echo tispl.bin verified; else "
+            "echo ERROR: tispl.bin update failed; test 0 = 1; fi; "
+            "else echo ERROR: cannot load hf-tispl.bin; test 0 = 1; fi"
+        ),
+        "hf_tiboot3": (
+            "echo Writing tiboot3.bin last; "
+            "if fatload mmc 1:1 ${loadaddr} hf-tiboot3.bin; then "
+            "if mtd erase hbmc.tiboot3 && "
+            "mtd write hbmc.tiboot3 ${loadaddr} 0 ${filesize} && "
+            "cmp.b ${loadaddr} 0x500000000 ${filesize}; then "
+            "echo tiboot3.bin verified; else "
+            "echo ERROR: tiboot3.bin update failed; test 0 = 1; fi; "
+            "else echo ERROR: cannot load hf-tiboot3.bin; test 0 = 1; fi"
+        ),
+        "hf_update": (
+            "run hf_setup && run hf_kernel && run hf_uboot && "
+            "run hf_tispl && run hf_tiboot3 && "
+            "echo HyperFlash update completed successfully"
+        ),
+    }
+    environment_file.write_text(
+        "".join(f"{name}={variables[name]}\n" for name in UPDATE_ENV_VARS),
+        encoding="ascii",
+    )
+    import_vars = " ".join(UPDATE_ENV_VARS)
     command_file.write_text(
-        """echo J7200 HyperFlash update started
-setenv mtdparts 'mtdparts=47034000.hyperbus:1m(hbmc.tiboot3),2m(hbmc.tispl),4m(hbmc.u-boot),256k(hbmc.env),-@8m(hbmc.rootfs)'
-mtd list
-
-echo Writing Linux Image and DTB bundle
-if fatload mmc 1:1 ${loadaddr} hf-kernel-dtb.bin; then
-    if test ${filesize} = 1840000; then
-        if mtd erase hbmc.rootfs 0 0x1840000 && mtd write hbmc.rootfs ${loadaddr} 0 ${filesize} && cmp.b ${loadaddr} 0x500800000 ${filesize}; then
-            echo Linux Image and DTB verified
-        else
-            echo ERROR: Linux Image and DTB update failed
-            exit
-        fi
-    else
-        echo ERROR: invalid hf-kernel-dtb.bin size
-        exit
-    fi
-else
-    echo ERROR: cannot load hf-kernel-dtb.bin
-    exit
-fi
-
-echo Writing u-boot.img
-if fatload mmc 1:1 ${loadaddr} hf-u-boot.img; then
-    if mtd erase hbmc.u-boot && mtd write hbmc.u-boot ${loadaddr} 0 ${filesize} && cmp.b ${loadaddr} 0x500300000 ${filesize}; then
-        echo u-boot.img verified
-    else
-        echo ERROR: u-boot.img update failed
-        exit
-    fi
-else
-    echo ERROR: cannot load u-boot.img
-    exit
-fi
-
-echo Writing tispl.bin
-if fatload mmc 1:1 ${loadaddr} hf-tispl.bin; then
-    if mtd erase hbmc.tispl && mtd write hbmc.tispl ${loadaddr} 0 ${filesize} && cmp.b ${loadaddr} 0x500100000 ${filesize}; then
-        echo tispl.bin verified
-    else
-        echo ERROR: tispl.bin update failed
-        exit
-    fi
-else
-    echo ERROR: cannot load tispl.bin
-    exit
-fi
-
-echo Writing tiboot3.bin last
-if fatload mmc 1:1 ${loadaddr} hf-tiboot3.bin; then
-    if mtd erase hbmc.tiboot3 && mtd write hbmc.tiboot3 ${loadaddr} 0 ${filesize} && cmp.b ${loadaddr} 0x500000000 ${filesize}; then
-        echo tiboot3.bin verified
-    else
-        echo ERROR: tiboot3.bin update failed
-        exit
-    fi
-else
-    echo ERROR: cannot load tiboot3.bin
-    exit
-fi
-
-echo HyperFlash update completed successfully
-""",
+        "fatload mmc 1:1 ${scriptaddr} flash-hyperflash.env\n"
+        f"env import -t ${{scriptaddr}} ${{filesize}} {import_vars}\n"
+        "run hf_update\n",
         encoding="ascii",
     )
-
-    mkimage = shutil.which("mkimage")
-    if not mkimage:
-        raise SystemExit("mkimage was not found; install u-boot-tools")
-    its_file.write_text(
-        f'''/dts-v1/;
-
-/ {{
-    description = "J7200 HyperFlash update";
-    #address-cells = <1>;
-
-    images {{
-        script {{
-            description = "Write and verify J7200 HyperFlash";
-            data = /incbin/("{command_file}");
-            type = "script";
-            arch = "arm64";
-            compression = "none";
-            hash-1 {{
-                algo = "sha256";
-            }};
-        }};
-    }};
-
-    configurations {{
-        default = "conf-1";
-        conf-1 {{
-            script = "script";
-        }};
-    }};
-}};
-''',
-        encoding="ascii",
-    )
-    try:
-        subprocess.run(
-            [mkimage, "-f", str(its_file), str(script_file)], check=True
-        )
-    finally:
-        its_file.unlink(missing_ok=True)
-    return script_file
+    return environment_file
 
 
 def main() -> None:
@@ -416,6 +384,7 @@ def main() -> None:
         "flash-hyperflash.cmd",
         "flash-hyperflash.its",
         "flash-hyperflash.scr",
+        "flash-hyperflash.env",
         "manifest.json",
     )
     for name in managed_outputs:
@@ -437,14 +406,15 @@ def main() -> None:
         artifacts["k3-j7200-common-proc-board.dtb"],
         bundle_path,
     )
-    script_path = make_flash_script(output)
+    environment_path = make_flash_environment(output)
 
     generated = [
         output / "hf-tiboot3.bin",
         output / "hf-tispl.bin",
         output / "hf-u-boot.img",
         bundle_path,
-        script_path,
+        output / "flash-hyperflash.cmd",
+        environment_path,
     ]
     manifest = {
         "layout": {
