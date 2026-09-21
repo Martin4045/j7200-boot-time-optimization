@@ -27,6 +27,10 @@
     };
     configurations {
         default = "conf-0";
-        conf-0 { kernel = "kernel"; fdt = "fdt"; };
+        conf-0 {
+            description = "J7200 eMMC Falcon Linux";
+            kernel = "kernel";
+            fdt = "fdt";
+        };
     };
 };

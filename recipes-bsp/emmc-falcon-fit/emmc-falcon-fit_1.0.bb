@@ -30,6 +30,17 @@ python do_compile() {
         bb.fatal('Kernel overlaps the R5 stack guard below 0x88000000')
     shutil.copyfile(source / 'fitImage.its', build / 'fitImage.its')
     subprocess.check_call(['mkimage', '-E', '-B', '0x200', '-f', 'fitImage.its', 'fitImage'], cwd=build)
+    # TI SPL fit_find_config_node() rejects any configuration without a
+    # description, even when /configurations/default names that node.
+    def fit_get(*args):
+        return subprocess.check_output(['fdtget', *args], cwd=build, text=True).strip()
+    configs = fit_get('-l', 'fitImage', '/configurations').splitlines()
+    default = fit_get('-t', 's', 'fitImage', '/configurations', 'default')
+    if default not in configs:
+        bb.fatal('FIT default configuration does not exist')
+    for config in configs:
+        if not fit_get('-t', 's', 'fitImage', '/configurations/' + config, 'description'):
+            bb.fatal('TI SPL requires a FIT configuration description')
     fit = (build / 'fitImage').read_bytes()
     if struct.unpack_from('>I', fit, 4)[0] > 0x10000:
         bb.fatal('External FIT metadata exceeds 64 KiB budget')
