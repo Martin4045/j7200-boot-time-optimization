@@ -24,3 +24,18 @@ SRC_URI:append = " \
     file://j7200-a72-emmc.config;subdir=git/configs \
 "
 UBOOT_CONFIG_FRAGMENTS:append = " ${@'j7200-emmc.config j7200-r5-emmc.config' if d.getVar('MACHINE') == 'j7200-evm-k3r5' else 'j7200-emmc.config j7200-a72-emmc.config' if d.getVar('MACHINE') == 'j7200-evm' else ''}"
+
+SRC_URI:append = " \
+    file://0009-arm-k3-add-J7200-R5-Falcon-boot-glue.patch \
+    file://0010-j7200-skip-fixups-without-a-payload-dt.patch \
+    file://0011-j7200-emmc-falcon-user-area.patch \
+    file://j7200-r5-falcon.config;subdir=git/configs \
+"
+UBOOT_CONFIG_FRAGMENTS:append = " ${@'j7200-r5-falcon.config' if d.getVar('MACHINE') == 'j7200-evm-k3r5' else ''}"
+
+# Binman emits tifalcon in the A72 build, but no A72 executable is in it.
+do_deploy:append() {
+    if [ "${MACHINE}" = "j7200-evm" ]; then
+        install -m 0644 ${B}/tifalcon.bin ${DEPLOYDIR}/tifalcon.bin
+    fi
+}

@@ -1,0 +1,32 @@
+/dts-v1/;
+/ {
+    description = "J7200 eMMC Falcon: unchanged Conventional Linux and DT";
+    #address-cells = <1>;
+    images {
+        kernel {
+            description = "Conventional raw Linux Image";
+            data = /incbin/("Image");
+            type = "kernel";
+            arch = "arm64";
+            os = "linux";
+            compression = "none";
+            load = <0x82000000>;
+            entry = <0x82000000>;
+            hash-1 { algo = "sha256"; };
+        };
+        fdt {
+            description = "Conventional J7200 Linux DTB";
+            data = /incbin/("k3-j7200-common-proc-board.dtb");
+            type = "flat_dt";
+            arch = "arm64";
+            os = "linux";
+            compression = "none";
+            load = <0x88000000>;
+            hash-1 { algo = "sha256"; };
+        };
+    };
+    configurations {
+        default = "conf-0";
+        conf-0 { kernel = "kernel"; fdt = "fdt"; };
+    };
+};

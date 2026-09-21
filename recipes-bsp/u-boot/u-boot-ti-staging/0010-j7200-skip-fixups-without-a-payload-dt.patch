@@ -1,0 +1,28 @@
+From: Boot Time Experiment <boot-time@example.com>
+Subject: [PATCH] board: ti: j721e: skip SPL fixups without a payload DT
+
+The Falcon firmware FIT has no A72 payload/control DT. spl_perform_fixups()
+runs before k3_falcon_prep() loads the Linux FIT. Do not pass its NULL
+fdt_addr into detect_enable_hyperflash(), where the selected GPIO state
+could lead to a NULL FDT access. The existing K3 Falcon hook subsequently
+prepares Linux bootargs and system DT fixups after loading the Linux DT.
+
+Upstream-Status: Pending
+---
+ board/ti/j721e/evm.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/board/ti/j721e/evm.c b/board/ti/j721e/evm.c
+--- a/board/ti/j721e/evm.c
++++ b/board/ti/j721e/evm.c
+@@ -144,6 +144,10 @@
+ void spl_perform_fixups(struct spl_image_info *spl_image)
+ {
++	/* A firmware-only Falcon FIT has no payload device tree yet. */
++	if (!spl_image->fdt_addr)
++		return;
++
+ 	detect_enable_hyperflash(spl_image->fdt_addr);
+ }
+ #endif
+ 

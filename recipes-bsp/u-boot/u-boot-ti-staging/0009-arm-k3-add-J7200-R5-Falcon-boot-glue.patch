@@ -1,0 +1,200 @@
+From 0fb77f3eb94a2a2a44f069f5f80a732758b28765 Mon Sep 17 00:00:00 2001
+From: Boot Time Experiment <boot-time@example.com>
+Date: Tue, 8 Sep 2026 17:58:28 +0900
+Subject: [PATCH] arm: k3: add J7200 R5 Falcon boot glue
+
+Upstream-Status: Inappropriate [J7200 Falcon boot experiment]
+
+---
+ arch/arm/dts/k3-j7200-binman.dtsi | 36 ++++++++++++++++++++++++
+ arch/arm/mach-k3/common.c                  | 46 +++++++++++++++++++++--
+ arch/arm/mach-k3/common.h                  |  4 ++
+ arch/arm/mach-k3/include/mach/j721e_spl.h |  1 +
+ arch/arm/mach-k3/r5/common.c               |  9 +++++
+ 5 files changed, 94 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/dts/k3-j7200-binman.dtsi b/arch/arm/dts/k3-j7200-binman.dtsi
+index 2b013d3fca2..653cc88e349 100644
+--- a/arch/arm/dts/k3-j7200-binman.dtsi
++++ b/arch/arm/dts/k3-j7200-binman.dtsi
+@@ -279,6 +279,42 @@
+ #define SPL_J7200_EVM_DTB "spl/dts/ti/k3-j7200-common-proc-board.dtb"
+ #define J7200_EVM_DTB "u-boot.dtb"
+ 
++/*
++ * Falcon package loaded by the R5 SPL.  Unlike tispl.bin this deliberately
++ * contains no A72 SPL (and no U-Boot proper); TF-A starts the preloaded Linux
++ * kernel as BL33 after OP-TEE initialization.
++ */
++&binman {
++	ti-falcon {
++		insert-template = <&ti_falcon_template>;
++
++		fit {
++			images {
++				dm {
++					ti-secure {
++						content = <&dm_falcon>;
++						keyfile = "custMpk.pem";
++					};
++					dm_falcon: ti-dm {
++						filename = "ti-dm/j7200/ipc_echo_testb_mcu1_0_release_strip.xer5f";
++						optional;
++					};
++				};
++			};
++
++			configurations {
++				default = "conf-0";
++
++				conf-0 {
++					description = "J7200 Falcon: TF-A, OP-TEE and DM";
++					firmware = "atf";
++					loadables = "tee", "dm";
++				};
++			};
++		};
++	};
++};
++
+ &binman {
+ 	ti-spl {
+ 		insert-template = <&ti_spl_template>;
+diff --git a/arch/arm/mach-k3/common.c b/arch/arm/mach-k3/common.c
+index bba07c05f7a..7e522f80546 100644
+--- a/arch/arm/mach-k3/common.c
++++ b/arch/arm/mach-k3/common.c
+@@ -41,6 +41,15 @@
+ #define PROC_ID_MCU_R5FSS0_CORE1		0x02
+ #define PROC_BOOT_CFG_FLAG_R5_LOCKSTEP		0x00000100
+ 
++#if IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM) && \
++	IS_ENABLED(CONFIG_SPL_OS_BOOT)
++#define BOOT_METRIC_SCRATCH_MAGIC	0x424d4554
++#define BOOT_METRIC_SCRATCH_ADDR	(CONFIG_SYS_K3_MCU_SCRATCHPAD_BASE + \
++					 CONFIG_SYS_K3_MCU_SCRATCHPAD_SIZE - 16)
++#define BOOT_METRIC_SEED_LO_ADDR		(BOOT_METRIC_SCRATCH_ADDR + 8)
++#define BOOT_METRIC_SEED_HI_ADDR		(BOOT_METRIC_SCRATCH_ADDR + 12)
++#endif
++
+ #include <asm/arch/k3-qos.h>
+ #include <mach/k3-ddr.h>
+ 
+@@ -610,8 +619,14 @@ static int k3_falcon_fdt_fixup(void *fdt)
+ 		       __func__, bootmedia, bootpart, ret);
+ 		return ret;
+ 	}
+-	snprintf(str, sizeof(str), "console=%s root=PARTUUID=%s rootwait",
+-		 env_get("console"), info.uuid);
++	if (IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM))
++		snprintf(str, sizeof(str),
++			 "console=ttyS2,115200n8 earlycon=ns16550a,mmio32,0x02800000 root=PARTUUID=%s rw rootfstype=ext4 rootwait",
++			 info.uuid);
++	else
++		snprintf(str, sizeof(str),
++			 "console=%s root=PARTUUID=%s rootwait",
++			 env_get("console"), info.uuid);
+ 
+ 	fdt_set_totalsize(fdt, fdt_totalsize(fdt) + CONFIG_SYS_FDT_PAD);
+ 	ret = fdt_find_and_setprop(fdt, "/chosen", "bootargs", str,
+@@ -621,6 +636,7 @@ static int k3_falcon_fdt_fixup(void *fdt)
+ 		       fdt_strerror(ret));
+ 		return ret;
+ 	}
++
+ 	debug("Set bootargs to: %s\n", str);
+ 
+ 	if (IS_ENABLED(CONFIG_OF_BOARD_SETUP)) {
+@@ -644,6 +660,29 @@ static int k3_falcon_fdt_fixup(void *fdt)
+ 	return 0;
+ }
+ 
++#if IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM)
++int k3_falcon_publish_boot_metrics(void *fdt)
++{
++	u64 seed_us;
++	int chosen;
++	int ret;
++
++	if (readl(BOOT_METRIC_SCRATCH_ADDR) != BOOT_METRIC_SCRATCH_MAGIC)
++		return -ENODATA;
++
++	chosen = fdt_path_offset(fdt, "/chosen");
++	if (chosen < 0)
++		return chosen;
++
++	seed_us = (u64)readl(BOOT_METRIC_SEED_LO_ADDR) |
++		  ((u64)readl(BOOT_METRIC_SEED_HI_ADDR) << 32);
++	ret = fdt_setprop_u64(fdt, chosen, "ti,r5-gtc-seed-us", seed_us);
++	if (ret)
++		return ret;
++	return fdt_setprop_string(fdt, chosen, "ti,boot-mode", "falcon");
++}
++#endif
++
+ static int k3_falcon_prep(void)
+ {
+ 	struct spl_image_loader *loader, *drv;
+@@ -693,6 +732,13 @@ void spl_board_prepare_for_boot(void)
+ 	ret = k3_falcon_prep();
+ 	if (ret)
+ 		panic("%s: Failed to boot in falcon mode: %d\n", __func__, ret);
++
++	/* A72 SPL normally performs this J7200 split-mode housekeeping. */
++	if (IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM)) {
++		ret = shutdown_mcu_r5_core1();
++		if (ret)
++			panic("Unable to shutdown MCU R5 core 1, %d\n", ret);
++	}
+ #endif
+ #if !(defined(CONFIG_SYS_ICACHE_OFF) && defined(CONFIG_SYS_DCACHE_OFF))
+ 	dcache_disable();
+diff --git a/arch/arm/mach-k3/common.h b/arch/arm/mach-k3/common.h
+index d28a56828b2..455a3103882 100644
+--- a/arch/arm/mach-k3/common.h
++++ b/arch/arm/mach-k3/common.h
+@@ -76,6 +76,10 @@ bool wkup_ctrl_is_lpm_exit(void);
+ int wkup_r5f_am62_lpm_meta_data_addr(u32 *meta_data_addr);
+ void lpm_resume_from_ddr(u32 meta_data_addr);
+ int shutdown_mcu_r5_core1(void);
++#if IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM) && \
++	IS_ENABLED(CONFIG_SPL_OS_BOOT)
++int k3_falcon_publish_boot_metrics(void *fdt);
++#endif
+ void save_certificate(void);
+ u32 resume_to_dm_f(void);
+ void resume_rproc_f(void);
+diff --git a/arch/arm/mach-k3/include/mach/j721e_spl.h b/arch/arm/mach-k3/include/mach/j721e_spl.h
+index e562ce719f7..be8cb13cc97 100644
+--- a/arch/arm/mach-k3/include/mach/j721e_spl.h
++++ b/arch/arm/mach-k3/include/mach/j721e_spl.h
+@@ -29,6 +29,7 @@
+ #define BOOT_DEVICE_XSPI 		0x16
+ #define BOOT_DEVICE_RAM 		0x17
+ #define BOOT_DEVICE_MMC2_2 		0xFF /* Invalid value */
++#define BOOT_DEVICE_NOBOOT		0xFE /* Falcon: no valid boot device */
+ 
+ /* Backup boot modes with MCU Only = 0 */
+ #define BACKUP_BOOT_DEVICE_RAM		0x0
+diff --git a/arch/arm/mach-k3/r5/common.c b/arch/arm/mach-k3/r5/common.c
+index 2ddeae0ba28..3a7e40f1e3a 100644
+--- a/arch/arm/mach-k3/r5/common.c
++++ b/arch/arm/mach-k3/r5/common.c
+@@ -289,6 +289,15 @@ void __noreturn jump_to_image_no_args(struct spl_image_info *spl_image)
+ 	if (ret)
+ 		panic("%s: ATF failed to load on rproc (%d)\n", __func__, ret);
+ 
++#if IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM) && \
++	IS_ENABLED(CONFIG_SPL_OS_BOOT)
++	ret = k3_falcon_publish_boot_metrics(
++		(void *)CONFIG_SPL_PAYLOAD_ARGS_ADDR);
++	if (ret)
++		panic("%s: Failed to publish Falcon boot metrics (%d)\n",
++		      __func__, ret);
++#endif
++
+ 	lpm_process();
+ #if CONFIG_IS_ENABLED(FIT_IMAGE_POST_PROCESS)
+ 	/* Authenticate ATF */
+-- 
+2.34.1

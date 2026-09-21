@@ -1,0 +1,124 @@
+Subject: [PATCH] j7200: load Falcon Linux from eMMC User Area after boot0 firmware
+
+Upstream-Status: Inappropriate [J7200 eMMC Falcon experiment]
+
+diff --git a/arch/arm/mach-k3/common.c b/arch/arm/mach-k3/common.c
+index a907c292a10..fc63be46bf7 100644
+--- a/arch/arm/mach-k3/common.c
++++ b/arch/arm/mach-k3/common.c
+@@ -640,6 +640,14 @@ static int k3_falcon_fdt_fixup(void *fdt)
+ 		return ret;
+ 	}
+ 
++	if (IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM)) {
++		int node = fdt_path_offset(fdt, "/bus@100000/mmc@4fb0000");
++
++		ret = node < 0 ? node :
++			fdt_setprop_string(fdt, node, "status", "disabled");
++		if (ret)
++			return ret;
++	}
+ 	debug("Set bootargs to: %s\n", str);
+ 
+ 	if (IS_ENABLED(CONFIG_OF_BOARD_SETUP)) {
+@@ -843,13 +851,14 @@ int shutdown_mcu_r5_core1(void)
+ 	if (ret) {
+ 		printf("Unable to request for device %d\n",
+ 		       dev_id_mcu_r5_core1);
++		goto release_proc_ctrl;
+ 	}
+ 
+ 	ret = dev_ops->put_device(ti_sci, dev_id_mcu_r5_core1);
+ 	if (ret) {
+ 		printf("Unable to assert reset on core %d\n",
+ 		       PROC_ID_MCU_R5FSS0_CORE1);
+-		return ret;
++		goto release_proc_ctrl;
+ 	}
+ 
+ release_proc_ctrl:
+diff --git a/arch/arm/mach-k3/j721e/j721e_init.c b/arch/arm/mach-k3/j721e/j721e_init.c
+index f1d814b8a24..08ac439ad0a 100644
+--- a/arch/arm/mach-k3/j721e/j721e_init.c
++++ b/arch/arm/mach-k3/j721e/j721e_init.c
+@@ -552,6 +552,10 @@ u32 spl_mmc_boot_mode(struct mmc *mmc, const u32 boot_device)
+ {
+ 	switch (boot_device) {
+ 	case BOOT_DEVICE_MMC1:
++		/* k3_falcon_prep() makes the second MMC load an OS load. */
++		if (IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM) &&
++		    IS_ENABLED(CONFIG_SPL_OS_BOOT) && !spl_start_uboot())
++			return MMCSD_MODE_FS;
+ 		if (IS_ENABLED(CONFIG_SUPPORT_EMMC_BOOT)) {
+ 			if (spl_mmc_emmc_boot_partition(mmc))
+ 				return MMCSD_MODE_EMMCBOOT;
+diff --git a/arch/arm/mach-k3/r5/common.c b/arch/arm/mach-k3/r5/common.c
+index 45c51b33eec..31af9ee3301 100644
+--- a/arch/arm/mach-k3/r5/common.c
++++ b/arch/arm/mach-k3/r5/common.c
+@@ -351,6 +351,11 @@ start_arm64:
+ 	if (!CONFIG_IS_ENABLED(SILENT_CONSOLE))
+ 		printf("Starting ATF on ARM64 core...\n\n");
+ 
++	/* Complete uncached DT/DM writes before releasing the A72. */
++	if (IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM) &&
++	    IS_ENABLED(CONFIG_SPL_OS_BOOT))
++		dsb();
++
+ 	ret = rproc_start(1);
+ 	if (ret)
+ 		panic("%s: ATF failed to start on rproc (%d)\n",
+diff --git a/board/ti/j721e/j721e.env b/board/ti/j721e/j721e.env
+index 00da1ab71ad..cc6cb09cccb 100644
+--- a/board/ti/j721e/j721e.env
++++ b/board/ti/j721e/j721e.env
+@@ -35,8 +35,13 @@ name_mcur5f0_0fw=/lib/firmware/j7200-mcu-r5f0_0-fw
+ 
+ boot_targets=mmc1 mmc0 usb pxe dhcp
+ boot=mmc
++#if CONFIG_TARGET_J7200_R5_EVM && CONFIG_SPL_OS_BOOT
++mmcdev=0
++bootpart=0:2
++#else
+ mmcdev=1
+ bootpart=1:2
++#endif
+ bootdir=/boot
+ rd_spec=-
+ dorprocboot=1
+diff --git a/common/spl/spl_mmc.c b/common/spl/spl_mmc.c
+index ea2ec69dcda..ccc89728847 100644
+--- a/common/spl/spl_mmc.c
++++ b/common/spl/spl_mmc.c
+@@ -431,9 +431,31 @@ int spl_mmc_load(struct spl_image_info *spl_image,
+ 		if (!ret)
+ 			return 0;
+ #endif
++		/* The J7200 Falcon firmware must come from the boot partition. */
++		if (IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM) &&
++		    IS_ENABLED(CONFIG_SPL_OS_BOOT))
++			return ret;
+ 		/* If RAW mode fails, try FS mode. */
+ #ifdef CONFIG_SYS_MMCSD_FS_BOOT
+ 	case MMCSD_MODE_FS:
++		/* Cached MMC state still selects boot0 after the firmware FIT.
++		 * Filesystem partition 2 exists only in hardware partition 0.
++		 */
++		if (IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM) &&
++		    IS_ENABLED(CONFIG_SPL_OS_BOOT) && !spl_start_uboot()) {
++			if (bootdev->boot_device != BOOT_DEVICE_MMC1)
++				return -ENODEV;
++			if (CONFIG_IS_ENABLED(MMC_TINY))
++				ret = mmc_switch_part(mmc, EMMC_HWPART_DEFAULT);
++			else
++				ret = blk_dselect_hwpart(mmc_get_blk_desc(mmc),
++							EMMC_HWPART_DEFAULT);
++			if (ret) {
++				puts("spl: eMMC User Area switch failed\n");
++				return ret;
++			}
++			puts("Falcon: eMMC User Area, partition 2, /boot/fitImage\n");
++		}
+ 		debug("spl: mmc boot mode: fs\n");
+ 
+ 		ret = spl_mmc_do_fs_boot(spl_image, bootdev, mmc, filename);
