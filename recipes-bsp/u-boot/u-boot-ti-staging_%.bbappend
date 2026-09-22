@@ -29,6 +29,7 @@ SRC_URI:append = " \
     file://0009-arm-k3-add-J7200-R5-Falcon-boot-glue.patch \
     file://0010-j7200-skip-fixups-without-a-payload-dt.patch \
     file://0011-j7200-emmc-falcon-user-area.patch \
+    file://0012-j7200-falcon-defer-core1-cleanup.patch \
     file://j7200-r5-falcon.config;subdir=git/configs \
 "
 UBOOT_CONFIG_FRAGMENTS:append = " ${@'j7200-r5-falcon.config' if d.getVar('MACHINE') == 'j7200-evm-k3r5' else ''}"

@@ -1,0 +1,24 @@
+From: Boot Time Experiment <boot-time@example.com>
+Subject: [PATCH] arm: k3: defer J7200 Falcon core1 cleanup to TF-A
+
+Do not send MCU core1 cleanup requests from the boot R5 host.
+The paired Falcon TF-A change performs the sequence on A72.
+
+Upstream-Status: Inappropriate [J7200 Falcon experiment]
+
+--- a/arch/arm/mach-k3/common.c
++++ b/arch/arm/mach-k3/common.c
+@@ -744,12 +744,7 @@
+ 	if (ret)
+ 		panic("%s: Failed to boot in falcon mode: %d\n", __func__, ret);
+ 
+-	/* A72 SPL normally performs this J7200 split-mode housekeeping. */
+-	if (IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM)) {
+-		ret = shutdown_mcu_r5_core1();
+-		if (ret)
+-			panic("Unable to shutdown MCU R5 core 1, %d\n", ret);
+-	}
++	/* J7200 core1 cleanup runs on A72 in the Falcon TF-A build. */
+ #endif
+ #if !(defined(CONFIG_SYS_ICACHE_OFF) && defined(CONFIG_SYS_DCACHE_OFF))
+ 	dcache_disable();

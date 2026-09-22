@@ -1,0 +1,115 @@
+From: Boot Time Experiment <boot-time@example.com>
+Subject: [PATCH] plat: ti: perform J7200 Falcon core1 cleanup on A72
+
+Do not send MCU core1 cleanup requests from the boot R5 host.
+The paired Falcon TF-A change performs the sequence on A72.
+
+Upstream-Status: Inappropriate [J7200 Falcon experiment]
+
+--- a/plat/ti/k3/common/k3_bl31_setup.c
++++ b/plat/ti/k3/common/k3_bl31_setup.c
+@@ -6,8 +6,10 @@
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+ 
++#include <errno.h>
+ #include <common/debug.h>
+ #include <ti_sci.h>
++#include <ti_sci_protocol.h>
+ #include <ti_sci_transport.h>
+ 
+ #include <plat_private.h>
+@@ -24,6 +26,72 @@
+ 	{ /* sentinel */ }
+ };
+ 
++#if J7200_FALCON_CORE1_CLEANUP
++/* J7200 MCU R5FSS0 core1; same IDs and sequence as A72 SPL. */
++#define J7200_MCU_CORE1_PROC_ID 2U
++#define J7200_MCU_CORE1_DEVICE_ID 251U
++
++static int j7200_falcon_core1_cleanup(void);
++
++/* Match A72 SPL ordering: after BL32/OP-TEE, before BL33/Linux. */
++void bl31_plat_runtime_setup(void)
++{
++	int ret;
++	bool stopped = false;
++
++	ret = j7200_falcon_core1_cleanup();
++	if (ret != 0) {
++		ERROR("Falcon late MCU core1 cleanup failed (%d)\n", ret);
++		panic();
++	}
++	ret = ti_sci_device_is_stop(J7200_MCU_CORE1_DEVICE_ID, NULL, &stopped);
++	if ((ret != 0) || !stopped)
++		panic();
++}
++
++static int j7200_falcon_core1_cleanup(void)
++{
++	uint64_t vector;
++	uint32_t cfg, ctrl, status;
++	bool stopped = false;
++	int ret, release_ret;
++
++	ret = ti_sci_proc_request(J7200_MCU_CORE1_PROC_ID);
++	if (ret != 0) {
++		ERROR("Falcon core1: processor request failed (%d)\n", ret);
++		return ret;
++	}
++	ret = ti_sci_proc_get_boot_status(J7200_MCU_CORE1_PROC_ID,
++					&vector, &cfg, &ctrl, &status);
++	if (ret != 0)
++		goto release;
++	/* Never shut down the sibling of a lockstep boot core. */
++	if ((cfg & PROC_BOOT_CFG_FLAG_R5_LOCKSTEP) != 0U) {
++		ret = -EINVAL;
++		goto release;
++	}
++	ret = ti_sci_proc_set_boot_ctrl(J7200_MCU_CORE1_PROC_ID,
++				       PROC_BOOT_CTRL_FLAG_R5_CORE_HALT, 0U);
++	if (ret != 0)
++		goto release;
++	ret = ti_sci_device_get(J7200_MCU_CORE1_DEVICE_ID);
++	if (ret != 0)
++		goto release;
++	ret = ti_sci_device_put(J7200_MCU_CORE1_DEVICE_ID);
++	if (ret != 0)
++		goto release;
++	/* Check the actual hardware state, not just an acknowledged PUT. */
++	ret = ti_sci_device_is_stop(J7200_MCU_CORE1_DEVICE_ID, NULL, &stopped);
++	if ((ret == 0) && !stopped)
++		ret = -EBUSY;
++release:
++	release_ret = ti_sci_proc_release(J7200_MCU_CORE1_PROC_ID);
++	if (ret == 0)
++		ret = release_ret;
++	return ret;
++}
++#endif
++
+ int ti_soc_init(void)
+ {
+ 	struct ti_sci_msg_version version;
+@@ -32,6 +100,10 @@
+ 	ret = ti_sci_get_revision(&version);
+ 	if (ret) {
+ 		ERROR("Unable to communicate with the control firmware (%d)\n", ret);
++#if J7200_FALCON_CORE1_CLEANUP
++		/* Caller ignores this return value; do not silently skip cleanup. */
++		panic();
++#endif
+ 		return ret;
+ 	}
+ 
+--- a/plat/ti/k3/platform.mk
++++ b/plat/ti/k3/platform.mk
+@@ -36,3 +36,7 @@
+ 				${PLAT_PATH}/common/k3_topology.c	\
+ 				${K3_TI_SCI_TRANSPORT}			\
+ 				${K3_PSCI_SOURCES}			\
++
++# Only the J7200 Full Falcon experiment replaces A72 SPL housekeeping.
++J7200_FALCON_CORE1_CLEANUP ?= 0
++$(eval $(call add_define,J7200_FALCON_CORE1_CLEANUP))
