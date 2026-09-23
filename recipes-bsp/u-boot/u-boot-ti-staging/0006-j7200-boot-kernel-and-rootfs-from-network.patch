@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jeongwoo Yeom <studavid@cyberperseus.com>
+Date: Tue, 22 Sep 2026 00:00:00 +0900
+Subject: [PATCH] configs: j7200: boot kernel and rootfs from network
+
+Keep tiboot3, tispl, and U-Boot in HyperFlash, but obtain the Linux Image
+and DTB from TFTP and mount the root filesystem over NFS.  Use fixed
+addresses on the dedicated development link so boot does not depend on a
+DHCP server.
+
+Leave a three-second autoboot delay for recovery and report each network
+failure before returning to the U-Boot prompt.  Preserve the corrected
+one-MiB HyperFlash tiboot3 partition used by the installed bootloader.
+
+Signed-off-by: Jeongwoo Yeom <studavid@cyberperseus.com>
+---
+ board/ti/j721e/j721e.env        | 28 ++++++++++++++++++++++++++++
+ configs/j7200_evm_a72_defconfig | 10 +++++++++-
+ 2 files changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/board/ti/j721e/j721e.env b/board/ti/j721e/j721e.env
+index 9e1343a0d9..1f3f87aa11 100644
+--- a/board/ti/j721e/j721e.env
++++ b/board/ti/j721e/j721e.env
+@@ -35,6 +35,34 @@ bootpart=1:2
+ bootdir=/boot
+ rd_spec=-
+ dorprocboot=1
++
++#if CONFIG_TARGET_J7200_A72_EVM
++ipaddr=192.168.1.100
++serverip=192.168.1.10
++netmask=255.255.255.0
++net_kernel_addr=0x82000000
++net_fdt_addr=0x88000000
++net_kernel_file=Image
++net_fdt_file=k3-j7200-common-proc-board.dtb
++nfsroot=/srv/nfs/j7200
++nfsopts=vers=3,tcp,nolock
++bootcmd_nfs=
++	echo Initializing J7200 Ethernet PHY;
++	run update_do_main_cpsw0_qsgmii_phyinit;
++	run main_cpsw0_qsgmii_phyinit;
++	echo Static network: board ${ipaddr}, server ${serverip};
++	if ping ${serverip}; then
++		echo Loading ${net_kernel_file} from ${serverip};
++		if tftpboot ${net_kernel_addr} ${net_kernel_file}; then
++			echo Loading ${net_fdt_file} from ${serverip};
++			if tftpboot ${net_fdt_addr} ${net_fdt_file}; then
++				setenv bootargs console=ttyS2,115200n8 earlycon=ns16550a,mmio32,0x02800000 root=/dev/nfs rw nfsroot=${serverip}:${nfsroot},${nfsopts} ip=${ipaddr}:${serverip}::${netmask}:j7200:eth0:off;
++				booti ${net_kernel_addr} - ${net_fdt_addr};
++			else echo ERROR: TFTP DTB download failed; fi;
++		else echo ERROR: TFTP kernel download failed; fi;
++	else echo ERROR: NFS/TFTP server is unreachable; fi;
++	echo Network boot failed - U-Boot console available
++#endif
+ 
+ #if CONFIG_TARGET_J7200_A72_EVM
+ update_do_main_cpsw0_qsgmii_phyinit=setenv do_main_cpsw0_qsgmii_phyinit 1;
+diff --git a/configs/j7200_evm_a72_defconfig b/configs/j7200_evm_a72_defconfig
+index 7ac66b4cf5..941b9ba882 100644
+--- a/configs/j7200_evm_a72_defconfig
++++ b/configs/j7200_evm_a72_defconfig
+@@ -1,6 +1,9 @@
+ CONFIG_ARM=y
+ CONFIG_ARCH_K3=y
+ CONFIG_SYS_MALLOC_F_LEN=0x8000
++CONFIG_BOOTDELAY=3
++CONFIG_USE_BOOTCOMMAND=y
++CONFIG_BOOTCOMMAND="run bootcmd_nfs"
+ CONFIG_SPL_GPIO=y
+ CONFIG_SPL_LIBCOMMON_SUPPORT=y
+ CONFIG_SPL_LIBGENERIC_SUPPORT=y
+@@ -26,6 +29,12 @@ CONFIG_SPL_LOAD_FIT=y
+ CONFIG_SPL_LOAD_FIT_ADDRESS=0x81000000
+ CONFIG_BOOTSTD_FULL=y
++# CONFIG_BOOTSTD_DEFAULTS is not set
+ CONFIG_OF_BOARD_SETUP=y
++CONFIG_NET=y
++CONFIG_CMD_NET=y
++# CONFIG_CMD_DHCP is not set
++CONFIG_CMD_PING=y
++CONFIG_CMD_TFTPBOOT=y
+ CONFIG_OF_SYSTEM_SETUP=y
+ CONFIG_LOGLEVEL=7
+ CONFIG_SPL_MAX_SIZE=0xc0000
+@@ -71,6 +80,6 @@ CONFIG_CMD_USB=y
+ CONFIG_CMD_USB_MASS_STORAGE=y
+ CONFIG_MTDIDS_DEFAULT="nor0=47040000.spi.0,nor0=47034000.hyperbus"
+-CONFIG_MTDPARTS_DEFAULT="mtdparts=47040000.spi.0:512k(ospi.tiboot3),2m(ospi.tispl),4m(ospi.u-boot),128k(ospi.env),128k(ospi.env.backup),1m(ospi.sysfw),-@8m(ospi.rootfs);47034000.hyperbus:512k(hbmc.tiboot3),2m(hbmc.tispl),4m(hbmc.u-boot),256k(hbmc.env),1m(hbmc.sysfw),-@8m(hbmc.rootfs)"
++CONFIG_MTDPARTS_DEFAULT="mtdparts=47040000.spi.0:512k(ospi.tiboot3),2m(ospi.tispl),4m(ospi.u-boot),128k(ospi.env),128k(ospi.env.backup),1m(ospi.sysfw),-@8m(ospi.rootfs);47034000.hyperbus:1m(hbmc.tiboot3),2m(hbmc.tispl),4m(hbmc.u-boot),256k(hbmc.env),-@8m(hbmc.rootfs)"
+ CONFIG_CMD_UBI=y
+ # CONFIG_ISO_PARTITION is not set
+ # CONFIG_SPL_EFI_PARTITION is not set
+-- 
+2.43.0
